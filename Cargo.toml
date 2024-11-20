@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "dewey/core",
+    "dewey/regression",
+    "dewey/serialize_macros",
+    "bernard",
+    "alfred",
+    "metatron",
+]
