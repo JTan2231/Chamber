@@ -95,7 +95,7 @@ pub fn setup() {
     create_if_nonexistent(&data_path);
     create_if_nonexistent(&queries_path);
 
-    crate::logger::Logger::init(format!(
+    chamber_common::Logger::init(format!(
         "{}/{}.log",
         logging_path.to_str().unwrap(),
         now.clone()

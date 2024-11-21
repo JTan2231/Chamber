@@ -2,15 +2,15 @@ use rand::{thread_rng, Rng};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
+use chamber_common::Logger;
+use chamber_common::{error, info};
 use serialize_macros::Serialize;
 
 use crate::cache::EmbeddingCache;
 use crate::config::get_data_dir;
 use crate::dbio::{get_directory, BLOCK_SIZE};
-use crate::logger::Logger;
 use crate::openai::{Embedding, EMBED_DIM};
 use crate::serialization::Serialize;
-use crate::{error, info};
 
 pub fn dot(a: &Embedding, b: &Embedding) -> f32 {
     let mut sum = 0.;

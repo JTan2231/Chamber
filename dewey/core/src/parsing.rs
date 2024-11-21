@@ -1,10 +1,10 @@
 use std::io::Read;
 
+use chamber_common::Logger;
+use chamber_common::{error, info};
+
 use crate::ledger::{get_indexing_rules, IndexRuleType};
 use crate::openai::EmbeddingSource;
-
-use crate::logger::Logger;
-use crate::{error, info, lprint};
 
 pub fn read_source(source: &EmbeddingSource) -> Result<String, std::io::Error> {
     let mut file = match std::fs::File::open(&source.filepath) {

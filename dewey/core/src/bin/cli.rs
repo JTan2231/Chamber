@@ -1,6 +1,5 @@
-use dewey_lib::logger::Logger;
-use dewey_lib::lprint;
-use dewey_lib::{config, dbio, hnsw, info, ledger};
+use chamber_common::{info, lprint, Logger};
+use dewey_lib::{config, dbio, hnsw, ledger};
 
 struct Flags {
     query: String,

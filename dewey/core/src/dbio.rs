@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
+use chamber_common::Logger;
+use chamber_common::{error, info};
 use serialize_macros::Serialize;
 
 use crate::cache::EmbeddingCache;
 use crate::config::get_data_dir;
 use crate::hnsw::{normalize, HNSW};
-use crate::logger::Logger;
 use crate::openai::{embed_bulk, Embedding, EmbeddingSource};
 use crate::serialization::Serialize;
-use crate::{error, info};
 
 // TODO: this could probably be a config parameter
 pub const BLOCK_SIZE: usize = 1024;

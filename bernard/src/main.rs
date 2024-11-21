@@ -3,9 +3,8 @@ use std::net::TcpListener;
 use std::thread;
 
 mod config;
-mod logger;
 
-use crate::logger::Logger;
+use chamber_common::{error, info, Logger};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 enum RequestMethod {

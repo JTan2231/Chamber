@@ -6,12 +6,12 @@ use std::thread;
 
 use rand::Rng;
 
+use chamber_common::Logger;
+use chamber_common::{error, info};
 use serialize_macros::Serialize;
 
-use crate::logger::Logger;
 use crate::parsing::{batch_sources, read_source, TOKEN_LIMIT};
 use crate::serialization::Serialize;
-use crate::{error, info};
 
 pub const EMBED_DIM: usize = 1536;
 

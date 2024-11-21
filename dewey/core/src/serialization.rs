@@ -1,5 +1,3 @@
-use crate::info;
-use crate::logger::Logger;
 use crate::openai::EMBED_DIM;
 
 pub trait Serialize {

@@ -3,10 +3,11 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use chamber_common::Logger;
+use chamber_common::{error, info, lprint};
+
 use dewey_lib::config;
-use dewey_lib::logger::Logger;
 use dewey_lib::message::DeweyRequest;
-use dewey_lib::{error, info, lprint};
 
 struct Flags {
     address: String,

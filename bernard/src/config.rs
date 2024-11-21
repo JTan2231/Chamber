@@ -57,7 +57,7 @@ pub fn setup() -> Result<(), std::io::Error> {
     let usage_path = local_path.join("usage");
     touch_file(&usage_path)?;
 
-    crate::logger::Logger::init(format!(
+    chamber_common::Logger::init(format!(
         "{}/{}.log",
         logging_path.to_str().unwrap(),
         now.clone()

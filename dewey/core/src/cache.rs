@@ -3,10 +3,11 @@ use std::fmt::{self, Debug};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
+use chamber_common::Logger;
+use chamber_common::{error, info};
+
 use crate::dbio::{get_directory, read_embedding_block, BLOCK_SIZE};
-use crate::logger::Logger;
 use crate::openai::Embedding;
-use crate::{error, info};
 
 // most of this is ripped from https://rust-unofficial.github.io/too-many-lists/sixth-final.html
 // this really could use some cleaning up

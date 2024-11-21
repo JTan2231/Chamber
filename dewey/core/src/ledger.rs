@@ -3,8 +3,8 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 
-use crate::logger::Logger;
-use crate::{error, info, lprint};
+use chamber_common::Logger;
+use chamber_common::{error, info, lprint};
 
 // TODO: there needs to be better delineation on the different rule types
 //       Currently, MinLength and Alphanumeric act as filters,

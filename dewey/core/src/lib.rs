@@ -1,7 +1,9 @@
 use std::io::{Read, Write};
 
+use chamber_common::Logger;
+use chamber_common::{error, info};
+
 use crate::hnsw::{Filter, Query, HNSW};
-use crate::logger::Logger;
 use crate::message::{DeweyResponse, DeweyResponseItem, RequestPayload};
 use crate::openai::{embed, EmbeddingSource};
 
@@ -10,7 +12,6 @@ pub mod config;
 pub mod dbio;
 pub mod hnsw;
 pub mod ledger;
-pub mod logger;
 pub mod message;
 mod openai;
 mod parsing;

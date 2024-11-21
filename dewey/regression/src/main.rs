@@ -1,7 +1,6 @@
 use std::io::BufRead;
 
-use dewey_lib::logger::Logger;
-use dewey_lib::lprint;
+use chamber_common::{lprint, Logger};
 
 struct TestServer {
     process: std::process::Child,
