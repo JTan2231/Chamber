@@ -241,7 +241,7 @@ fn analysis(
 
     let label = prompt!(LABEL_PROMPT, user_context);
     let string_split = dewey_string.split(":").collect::<Vec<&str>>();
-    let dewey_client = dewey_core::DeweyClient {
+    let dewey_client = dewey_lib::DeweyClient {
         address: string_split[0].to_string(),
         port: string_split[1].parse().unwrap(),
     };
