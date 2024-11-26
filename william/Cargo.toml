@@ -1,0 +1,8 @@
+[package]
+name = "william"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tungstenite = "0.24.0"
+chamber-common = { path = "../common" }

@@ -5,5 +5,7 @@ members = [
     "dewey/serialize_macros",
     "bernard",
     "alfred",
-    "metatron", "common",
+    "metatron",
+    "common",
+    "william",
 ]
