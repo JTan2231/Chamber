@@ -1,9 +1,8 @@
+use rusqlite::params;
+
 use chamber_common::{error, lprint, Logger};
 
-use crate::types::{
-    ArrakisRequest, ArrakisResponse, Completion, Conversation, ConversationList, Ping,
-    RequestPayload, ResponsePayload, SystemPrompt,
-};
+use crate::types::*;
 
 mod network;
 mod types;
@@ -49,8 +48,6 @@ fn get_conversations_dir() -> std::path::PathBuf {
 //       with it being something like
 //       ~/.<local|config>/chamber/...
 fn setup() {
-    let home_dir = get_home_dir();
-
     let local_path = get_local_dir();
     let config_path = get_config_dir();
 
@@ -65,12 +62,46 @@ fn setup() {
     chamber_common::Logger::init(logging_path.join("debug.log").to_str().unwrap().to_string());
 }
 
+fn is_valid_guid(guid: &str) -> bool {
+    if guid.len() != 36 {
+        return false;
+    }
+
+    if guid.chars().nth(8) != Some('-')
+        || guid.chars().nth(13) != Some('-')
+        || guid.chars().nth(18) != Some('-')
+        || guid.chars().nth(23) != Some('-')
+    {
+        return false;
+    }
+
+    let hex_only: String = guid.chars().filter(|&c| c != '-').collect();
+
+    if hex_only.len() != 32 {
+        return false;
+    }
+
+    hex_only.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 fn main() {
     setup();
+
+    let db_ = std::sync::Arc::new(std::sync::Mutex::new(
+        rusqlite::Connection::open(get_local_dir().join("william.sqlite"))
+            .expect("Failed to open database"),
+    ));
+
+    db_.lock()
+        .unwrap()
+        .execute_batch(&std::fs::read_to_string("db.sql").unwrap())
+        .expect("Failed to initialize database");
+
     let server = std::net::TcpListener::bind("127.0.0.1:9001").unwrap();
     println!("WebSocket server listening on ws://127.0.0.1:9001");
 
     for stream in server.incoming() {
+        let db = std::sync::Arc::clone(&db_);
         std::thread::spawn(move || {
             let stream = stream.unwrap();
             let mut websocket = tungstenite::accept(stream).unwrap();
@@ -102,12 +133,57 @@ fn main() {
                     }
                 };
 
-                match request.payload {
-                    RequestPayload::Completion(payload) => {
-                        let (tx, rx) = std::sync::mpsc::channel::<String>();
+                match request {
+                    ArrakisRequest::Completion { mut payload } => {
+                        // this needs to be async
+                        if false
+                        /*is_valid_guid(&payload.name)*/
+                        {
+                            let new_name = network::prompt(
+                                &"openai".to_string(),
+                                &r#"
+                                You will be given the start of a conversation.
+                                Give it a name.
+                                Guidelines:
+                                - No markdown
+                                - Respond with _only_ the name.
+                                "#
+                                .to_string(),
+                                &vec![payload.messages[0].clone()],
+                            );
+
+                            payload.name = new_name
+                                .unwrap()
+                                .content
+                                .chars()
+                                .map(|c| match c {
+                                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                                    c if c.is_alphanumeric()
+                                        || c == '.'
+                                        || c == '-'
+                                        || c == ' ' =>
+                                    {
+                                        c
+                                    }
+                                    _ => '_',
+                                })
+                                .collect();
+                        }
+
+                        // the conversation needs to be set with a db ID at this point
                         let mut saved_conversation = payload.clone();
+                        saved_conversation.upsert(&db.lock().unwrap()).unwrap();
+
+                        let (tx, rx) = std::sync::mpsc::channel::<String>();
                         std::thread::spawn(move || {
-                            match network::prompt_stream(&payload.conversation, tx) {
+                            match network::prompt_stream(
+                                &payload
+                                    .messages
+                                    .iter()
+                                    .map(|m| Message::from(m.clone()))
+                                    .collect(),
+                                tx,
+                            ) {
                                 Ok(_) => {}
                                 Err(e) => {
                                     error!("error sending message to GPT endpoint: {}", e);
@@ -119,13 +195,26 @@ fn main() {
                         loop {
                             match rx.recv() {
                                 Ok(message) => {
-                                    let last = saved_conversation.conversation.last_mut().unwrap();
+                                    let request_id = saved_conversation.messages
+                                        [saved_conversation.messages.len() - 2]
+                                        .id
+                                        .unwrap();
+
+                                    let last = saved_conversation.messages.last_mut().unwrap();
                                     last.content.push_str(&message);
+
+                                    let conversation_id = saved_conversation.id.unwrap();
+                                    let response_id = last.id.unwrap();
+                                    let conversation_name = saved_conversation.name.clone();
 
                                     let response = serde_json::to_string(&ArrakisResponse {
                                         payload: ResponsePayload::Completion(Completion {
                                             stream: true,
                                             delta: message,
+                                            name: conversation_name,
+                                            conversation_id,
+                                            request_id,
+                                            response_id,
                                         }),
                                     })
                                     .unwrap();
@@ -161,37 +250,14 @@ fn main() {
                                         }
                                     };
 
-                                    // save the conversation
-                                    let conversations_dir = get_conversations_dir();
-                                    let contents = match serde_json::to_string(&saved_conversation)
-                                    {
-                                        Ok(c) => c,
-                                        Err(e) => {
-                                            error!("error serializing conversation: {}", e);
-                                            String::new()
-                                        }
-                                    };
-
-                                    let filename = conversations_dir
-                                        .join(format!("{}.json", saved_conversation.name));
-                                    match std::fs::write(filename.clone(), contents) {
-                                        Ok(_) => {
-                                            println!(
-                                                "conversation saved to {}",
-                                                filename.to_str().unwrap()
-                                            );
-                                        }
-                                        Err(e) => {
-                                            error!("error saving conversation: {}", e);
-                                        }
-                                    };
+                                    saved_conversation.upsert(&db.lock().unwrap()).unwrap();
 
                                     break;
                                 }
                             }
                         }
                     }
-                    RequestPayload::Ping(_) => {
+                    ArrakisRequest::Ping { payload: _ } => {
                         let response = serde_json::to_string(&ArrakisResponse {
                             payload: ResponsePayload::Ping(Ping {
                                 body: "pong".to_string(),
@@ -209,12 +275,20 @@ fn main() {
                             }
                         };
                     }
-                    RequestPayload::ConversationList => {
-                        let mut conversations = Vec::new();
-                        for entry in std::fs::read_dir(get_conversations_dir()).unwrap() {
-                            let entry = entry.unwrap();
-                            conversations.push(entry.file_name().into_string().unwrap());
-                        }
+                    ArrakisRequest::ConversationList => {
+                        let db = db.lock().unwrap();
+                        let mut query = db.prepare("SELECT id, name from conversations").unwrap();
+                        let conversations = query
+                            .query_map(params![], |row| {
+                                Ok(Conversation {
+                                    id: row.get(0)?,
+                                    name: row.get(1)?,
+                                    messages: Vec::new(),
+                                })
+                            })
+                            .unwrap()
+                            .map(|c| c.unwrap())
+                            .collect();
 
                         let response = serde_json::to_string(&ArrakisResponse {
                             payload: ResponsePayload::ConversationList(ConversationList {
@@ -233,24 +307,67 @@ fn main() {
                             }
                         };
                     }
-                    RequestPayload::Load(payload) => {
-                        let path = get_conversations_dir().join(format!("{}", payload.name));
-                        let contents = match std::fs::read_to_string(path.clone()) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                lprint!(
-                                    error,
-                                    "error reading conversation file {}: {}",
-                                    path.to_str().unwrap(),
-                                    e
-                                );
-                                continue;
-                            }
+                    ArrakisRequest::Load { payload } => {
+                        let db = db.lock().unwrap();
+                        let mut query = db
+                            .prepare(
+                                "
+                                    SELECT
+                                        c.id as conversation_id,
+                                        c.name as conversation_name,
+                                        m.id as message_id,
+                                        m.message_type_id,
+                                        m.content,
+                                        m.model,
+                                        m.system_prompt,
+                                        l.sequence
+                                    FROM conversations c
+                                    JOIN links l ON c.id = l.conversation_id
+                                    JOIN messages m ON l.message_id = m.id
+                                    WHERE c.id = ?1
+                                    ORDER BY l.sequence ASC
+                                ",
+                            )
+                            .unwrap();
+
+                        let rows = query
+                            .query_map(params![payload.id], |row| {
+                                Ok((
+                                    row.get::<_, i64>("conversation_id")?,
+                                    row.get::<_, String>("conversation_name")?,
+                                    row.get::<_, i64>("message_id")?,
+                                    MessageType::from_id(row.get::<_, i64>("message_type_id")?)
+                                        .unwrap(),
+                                    row.get::<_, String>("content")?,
+                                    row.get::<_, String>("model")?,
+                                    row.get::<_, String>("system_prompt")?,
+                                    row.get::<_, i32>("sequence")?,
+                                ))
+                            })
+                            .unwrap();
+
+                        let mut conversation = Conversation {
+                            id: Some(payload.id),
+                            name: String::new(),
+                            messages: Vec::new(),
                         };
 
-                        let conversation: Conversation = serde_json::from_str(&contents).unwrap();
+                        for row in rows {
+                            let row = row.unwrap();
+                            println!("row: {:?}", row);
+                            conversation.name = row.1;
+                            conversation.messages.push(Message {
+                                id: Some(row.2),
+                                message_type: row.3,
+                                content: row.4,
+                                model: row.5,
+                                system_prompt: row.6,
+                                sequence: row.7,
+                            });
+                        }
+
                         let response = serde_json::to_string(&ArrakisResponse {
-                            payload: ResponsePayload::Load(conversation),
+                            payload: ResponsePayload::Load(conversation.into()),
                         })
                         .unwrap();
 
@@ -264,7 +381,7 @@ fn main() {
                             }
                         };
                     }
-                    RequestPayload::SystemPrompt(payload) => {
+                    ArrakisRequest::SystemPrompt { payload } => {
                         let path = get_config_dir().join("system_prompt");
 
                         if payload.write {

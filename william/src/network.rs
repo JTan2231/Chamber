@@ -133,10 +133,12 @@ fn get_openai_request_params(
         path: "/v1/chat/completions".to_string(),
         port: 443,
         messages: vec![Message {
+            id: None,
             message_type: MessageType::System,
             content: system_prompt.clone(),
             model: String::new(),
             system_prompt,
+            sequence: -1,
         }]
         .iter()
         .chain(chat_history.iter())
@@ -163,10 +165,12 @@ fn get_groq_request_params(
         path: "/openai/v1/chat/completions".to_string(),
         port: 443,
         messages: vec![Message {
+            id: None,
             message_type: MessageType::System,
             content: system_prompt.clone(),
             model: String::new(),
             system_prompt,
+            sequence: -1,
         }]
         .iter()
         .chain(chat_history.iter())
@@ -503,9 +507,11 @@ pub fn prompt(
     }
 
     Ok(Message {
+        id: None,
         message_type: MessageType::Assistant,
         content,
         model: api.to_string(),
         system_prompt: system_prompt.to_string(),
+        sequence: 1,
     })
 }
