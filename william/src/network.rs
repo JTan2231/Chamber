@@ -124,11 +124,13 @@ fn build_request(params: &RequestParams) -> String {
 
 fn get_openai_request_params(
     system_prompt: String,
+    api: API,
     chat_history: &Vec<Message>,
     stream: bool,
 ) -> RequestParams {
+    let (provider, model) = api.to_strings();
     RequestParams {
-        provider: "openai".to_string(),
+        provider,
         host: "api.openai.com".to_string(),
         path: "/v1/chat/completions".to_string(),
         port: 443,
@@ -136,7 +138,7 @@ fn get_openai_request_params(
             id: None,
             message_type: MessageType::System,
             content: system_prompt.clone(),
-            model: String::new(),
+            api,
             system_prompt,
             sequence: -1,
         }]
@@ -144,7 +146,7 @@ fn get_openai_request_params(
         .chain(chat_history.iter())
         .cloned()
         .collect::<Vec<Message>>(),
-        model: "gpt-4o-mini".to_string(),
+        model,
         stream,
         authorization_token: env::var("OPENAI_API_KEY")
             .expect("OPENAI_API_KEY environment variable not set"),
@@ -156,11 +158,13 @@ fn get_openai_request_params(
 // this is basically a copy of the openai_request_params
 fn get_groq_request_params(
     system_prompt: String,
+    api: API,
     chat_history: &Vec<Message>,
     stream: bool,
 ) -> RequestParams {
+    let (provider, model) = api.to_strings();
     RequestParams {
-        provider: "groq".to_string(),
+        provider,
         host: "api.groq.com".to_string(),
         path: "/openai/v1/chat/completions".to_string(),
         port: 443,
@@ -168,7 +172,7 @@ fn get_groq_request_params(
             id: None,
             message_type: MessageType::System,
             content: system_prompt.clone(),
-            model: String::new(),
+            api: API::Groq(GroqModel::LLaMA70B),
             system_prompt,
             sequence: -1,
         }]
@@ -176,7 +180,7 @@ fn get_groq_request_params(
         .chain(chat_history.iter())
         .cloned()
         .collect::<Vec<Message>>(),
-        model: "llama-3.2-90b-text-preview".to_string(),
+        model,
         stream,
         authorization_token: env::var("GROQ_API_KEY")
             .expect("GRQO_API_KEY environment variable not set"),
@@ -187,16 +191,18 @@ fn get_groq_request_params(
 
 fn get_anthropic_request_params(
     system_prompt: String,
+    api: API,
     chat_history: &Vec<Message>,
     stream: bool,
 ) -> RequestParams {
+    let (provider, model) = api.to_strings();
     RequestParams {
-        provider: "anthropic".to_string(),
+        provider,
         host: "api.anthropic.com".to_string(),
         path: "/v1/messages".to_string(),
         port: 443,
         messages: chat_history.iter().cloned().collect::<Vec<Message>>(),
-        model: "claude-3-5-sonnet-latest".to_string(),
+        model,
         stream,
         authorization_token: env::var("ANTHROPIC_API_KEY")
             .expect("ANTHROPIC_API_KEY environment variable not set"),
@@ -205,18 +211,21 @@ fn get_anthropic_request_params(
     }
 }
 
+// TODO: model enums + etc.
 fn get_gemini_request_params(
     system_prompt: String,
+    api: API,
     chat_history: &Vec<Message>,
     stream: bool,
 ) -> RequestParams {
+    let (provider, model) = api.to_strings();
     RequestParams {
-        provider: "gemini".to_string(),
+        provider,
         host: "generativelanguage.googleapis.com".to_string(),
         path: "/v1beta/models/gemini-1.5-flash-latest:generateContent".to_string(),
         port: 443,
         messages: chat_history.iter().cloned().collect::<Vec<Message>>(),
-        model: String::new(),
+        model,
         stream,
         authorization_token: env::var("GEMINI_API_KEY")
             .expect("GEMINI_API_KEY environment variable not set"),
@@ -365,14 +374,19 @@ pub fn prompt_stream(
     tx: std::sync::mpsc::Sender<String>,
 ) -> Result<(), std::io::Error> {
     let last_message = chat_history.last().unwrap();
-    let api = last_message.model.clone();
+    let api = last_message.api.clone();
     let system_prompt = last_message.system_prompt.clone();
 
-    let params = match api.as_str() {
-        "anthropic" => get_anthropic_request_params(system_prompt.clone(), chat_history, true),
-        "openai" => get_openai_request_params(system_prompt.clone(), chat_history, true),
-        "groq" => get_groq_request_params(system_prompt.clone(), chat_history, true),
-        _ => panic!("Invalid API does not yet support streaming: {}", api),
+    let params = match api {
+        API::Anthropic(_) => {
+            get_anthropic_request_params(system_prompt.clone(), api.clone(), chat_history, true)
+        }
+        API::OpenAI(_) => {
+            get_openai_request_params(system_prompt.clone(), api.clone(), chat_history, true)
+        }
+        API::Groq(_) => {
+            get_groq_request_params(system_prompt.clone(), api.clone(), chat_history, true)
+        }
     };
 
     let request = build_request(&params);
@@ -383,11 +397,10 @@ pub fn prompt_stream(
     stream.flush().expect("Failed to flush stream");
 
     info!("stream written");
-    let response = match api.as_str() {
-        "anthropic" => process_anthropic_stream(stream, &tx),
-        "openai" => process_openai_stream(stream, &tx),
-        "groq" => process_openai_stream(stream, &tx),
-        _ => panic!("Invalid API: {}--how'd this get here?", api),
+    let response = match api {
+        API::Anthropic(_) => process_anthropic_stream(stream, &tx),
+        API::OpenAI(_) => process_openai_stream(stream, &tx),
+        API::Groq(_) => process_openai_stream(stream, &tx),
     };
 
     match response {
@@ -402,16 +415,20 @@ pub fn prompt_stream(
 }
 
 pub fn prompt(
-    api: &String,
+    api: API,
     system_prompt: &String,
     chat_history: &Vec<Message>,
 ) -> Result<Message, std::io::Error> {
-    let params = match api.as_str() {
-        "anthropic" => get_anthropic_request_params(system_prompt.clone(), chat_history, false),
-        "openai" => get_openai_request_params(system_prompt.clone(), chat_history, false),
-        "gemini" => get_gemini_request_params(system_prompt.clone(), chat_history, false),
-        "groq" => get_groq_request_params(system_prompt.clone(), chat_history, false),
-        _ => panic!("Invalid API: {}--how'd this get here?", api),
+    let params = match api {
+        API::Anthropic(_) => {
+            get_anthropic_request_params(system_prompt.clone(), api.clone(), chat_history, false)
+        }
+        API::OpenAI(_) => {
+            get_openai_request_params(system_prompt.clone(), api.clone(), chat_history, false)
+        }
+        API::Groq(_) => {
+            get_groq_request_params(system_prompt.clone(), api.clone(), chat_history, false)
+        }
     };
 
     let request = build_request(&params);
@@ -483,18 +500,12 @@ pub fn prompt(
 
     let response_json: serde_json::Value = response_json.unwrap();
 
-    let mut content = match api.as_str() {
-        "openai" => response_json["choices"][0]["message"]["content"].to_string(),
-        "groq" => response_json["choices"][0]["message"]["content"].to_string(),
-        "anthropic" => response_json["content"][0]["text"].to_string(),
-        "gemini" => response_json["candidates"][0]["content"]["parts"][0]["text"].to_string(),
-        _ => {
-            error!(
-                "provider {} isn't yet configured for reading the HTTP response properly",
-                params.provider
-            );
-            String::new()
-        }
+    let mut content = match api {
+        API::Anthropic(_) => response_json["choices"][0]["message"]["content"].to_string(),
+        API::OpenAI(_) => response_json["choices"][0]["message"]["content"].to_string(),
+        API::Groq(_) => response_json["content"][0]["text"].to_string(),
+        // TODO: gemini
+        //_ => response_json["candidates"][0]["content"]["parts"][0]["text"].to_string(),
     };
 
     content = content
@@ -510,7 +521,7 @@ pub fn prompt(
         id: None,
         message_type: MessageType::Assistant,
         content,
-        model: api.to_string(),
+        api,
         system_prompt: system_prompt.to_string(),
         sequence: 1,
     })

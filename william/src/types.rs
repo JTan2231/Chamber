@@ -35,11 +35,120 @@ impl MessageType {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "provider", content = "model")]
+pub enum API {
+    #[serde(rename = "openai")]
+    OpenAI(OpenAIModel),
+    #[serde(rename = "groq")]
+    Groq(GroqModel),
+    #[serde(rename = "anthropic")]
+    Anthropic(AnthropicModel),
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum OpenAIModel {
+    #[serde(rename = "gpt-4o")]
+    GPT4o,
+    #[serde(rename = "gpt-4o-mini")]
+    GPT4oMini,
+    #[serde(rename = "o1-preview")]
+    O1Preview,
+    #[serde(rename = "o1-mini")]
+    O1Mini,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum GroqModel {
+    #[serde(rename = "llama3-70b-8192")]
+    LLaMA70B,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum AnthropicModel {
+    #[serde(rename = "claude-3-opus-20240229")]
+    Claude3Opus,
+    #[serde(rename = "claude-3-sonnet-20240229")]
+    Claude3Sonnet,
+    #[serde(rename = "claude-3-haiku-20240307")]
+    Claude3Haiku,
+    #[serde(rename = "claude-3-5-sonnet-latest")]
+    Claude35Sonnet,
+    #[serde(rename = "claude-3-5-haiku-latest")]
+    Claude35Haiku,
+}
+
+impl API {
+    pub fn from_strings(provider: &str, model: &str) -> Result<Self, String> {
+        match provider {
+            "openai" => {
+                let model = match model {
+                    "gpt-4o" => OpenAIModel::GPT4o,
+                    "gpt-4o-mini" => OpenAIModel::GPT4oMini,
+                    "o1-preview" => OpenAIModel::O1Preview,
+                    "o1-mini" => OpenAIModel::O1Mini,
+                    _ => return Err(format!("Unknown OpenAI model: {}", model)),
+                };
+                Ok(API::OpenAI(model))
+            }
+            "groq" => {
+                let model = match model {
+                    "llama3-70b-8192" => GroqModel::LLaMA70B,
+                    _ => return Err(format!("Unknown Groq model: {}", model)),
+                };
+                Ok(API::Groq(model))
+            }
+            "anthropic" => {
+                let model = match model {
+                    "claude-3-opus-20240229" => AnthropicModel::Claude3Opus,
+                    "claude-3-sonnet-20240229" => AnthropicModel::Claude3Sonnet,
+                    "claude-3-haiku-20240307" => AnthropicModel::Claude3Haiku,
+                    "claude-3-5-sonnet-latest" => AnthropicModel::Claude35Sonnet,
+                    "claude-3-5-haiku-latest" => AnthropicModel::Claude35Haiku,
+                    _ => return Err(format!("Unknown Anthropic model: {}", model)),
+                };
+                Ok(API::Anthropic(model))
+            }
+            _ => Err(format!("Unknown provider: {}", provider)),
+        }
+    }
+
+    pub fn to_strings(&self) -> (String, String) {
+        match self {
+            API::OpenAI(model) => {
+                let model_str = match model {
+                    OpenAIModel::GPT4o => "gpt-4o",
+                    OpenAIModel::GPT4oMini => "gpt-4o-mini",
+                    OpenAIModel::O1Preview => "o1-preview",
+                    OpenAIModel::O1Mini => "o1-mini",
+                };
+                ("openai".to_string(), model_str.to_string())
+            }
+            API::Groq(model) => {
+                let model_str = match model {
+                    GroqModel::LLaMA70B => "llama3-70b-8192",
+                };
+                ("groq".to_string(), model_str.to_string())
+            }
+            API::Anthropic(model) => {
+                let model_str = match model {
+                    AnthropicModel::Claude3Opus => "claude-3-opus-20240229",
+                    AnthropicModel::Claude3Sonnet => "claude-3-sonnet-20240229",
+                    AnthropicModel::Claude3Haiku => "claude-3-haiku-20240307",
+                    AnthropicModel::Claude35Sonnet => "claude-3-5-sonnet-latest",
+                    AnthropicModel::Claude35Haiku => "claude-3-5-haiku-latest",
+                };
+                ("anthropic".to_string(), model_str.to_string())
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub id: Option<i64>,
     pub message_type: MessageType,
     pub content: String,
-    pub model: String,
+    pub api: API,
     pub system_prompt: String,
     pub sequence: i32,
 }
@@ -164,14 +273,27 @@ impl Message {
     }
 
     pub fn insert(&mut self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {
+        let (provider, model_name) = self.api.to_strings();
+
+        let api_config_id: i64 = db.query_row(
+            "SELECT id FROM models WHERE provider = ?1 AND name = ?2",
+            params![provider, model_name],
+            |row| row.get(0),
+        )?;
+
         let update_count = db.execute(
-            "INSERT INTO messages (message_type_id, content, model, system_prompt) VALUES (?1, ?2, ?3, ?4)",
-            params![self.message_type.id(), self.content, self.model, self.system_prompt],
-        );
+            "INSERT INTO messages (message_type_id, content, api_config_id, system_prompt) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                self.message_type.id(),
+                self.content,
+                api_config_id,
+                self.system_prompt
+            ],
+        )?;
 
         self.id = Some(db.last_insert_rowid());
 
-        update_count
+        Ok(update_count)
     }
 
     pub fn upsert(&mut self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {

@@ -136,11 +136,9 @@ fn main() {
                 match request {
                     ArrakisRequest::Completion { mut payload } => {
                         // this needs to be async
-                        if false
-                        /*is_valid_guid(&payload.name)*/
-                        {
+                        if is_valid_guid(&payload.name) {
                             let new_name = network::prompt(
-                                &"openai".to_string(),
+                                API::OpenAI(OpenAIModel::GPT4oMini),
                                 &r#"
                                 You will be given the start of a conversation.
                                 Give it a name.
@@ -318,12 +316,14 @@ fn main() {
                                         m.id as message_id,
                                         m.message_type_id,
                                         m.content,
-                                        m.model,
+                                        api.provider,
+                                        api.name,
                                         m.system_prompt,
                                         l.sequence
                                     FROM conversations c
                                     JOIN links l ON c.id = l.conversation_id
                                     JOIN messages m ON l.message_id = m.id
+                                    JOIN models api ON m.api_config_id = api.id
                                     WHERE c.id = ?1
                                     ORDER BY l.sequence ASC
                                 ",
@@ -332,6 +332,11 @@ fn main() {
 
                         let rows = query
                             .query_map(params![payload.id], |row| {
+                                let provider = row.get::<_, String>("provider")?;
+                                let model_name = row.get::<_, String>("name")?;
+                                let api = API::from_strings(&provider, &model_name)
+                                    .map_err(|e| rusqlite::Error::InvalidParameterName(e))?;
+
                                 Ok((
                                     row.get::<_, i64>("conversation_id")?,
                                     row.get::<_, String>("conversation_name")?,
@@ -339,7 +344,7 @@ fn main() {
                                     MessageType::from_id(row.get::<_, i64>("message_type_id")?)
                                         .unwrap(),
                                     row.get::<_, String>("content")?,
-                                    row.get::<_, String>("model")?,
+                                    api,
                                     row.get::<_, String>("system_prompt")?,
                                     row.get::<_, i32>("sequence")?,
                                 ))
@@ -360,7 +365,7 @@ fn main() {
                                 id: Some(row.2),
                                 message_type: row.3,
                                 content: row.4,
-                                model: row.5,
+                                api: row.5,
                                 system_prompt: row.6,
                                 sequence: row.7,
                             });
