@@ -278,17 +278,16 @@ fn process_openai_stream(
                 }
             };
 
-            let delta = response_json["choices"][0]["delta"]["content"]
+            let mut delta = response_json["choices"][0]["delta"]["content"]
                 .to_string()
                 .replace("\\n", "\n")
+                .replace("\\t", "\t")
                 .replace("\\\"", "\"")
                 .replace("\\'", "'")
                 .replace("\\\\", "\\");
 
-            // remove quotes
-            let delta = delta[1..delta.len() - 1].to_string();
-
             if delta != "null" {
+                delta = delta[1..delta.len() - 1].to_string();
                 send_delta(tx, delta.clone());
                 full_message.push_str(&delta);
             }

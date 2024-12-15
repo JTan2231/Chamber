@@ -182,6 +182,13 @@ pub struct Ping {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Fork {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: i64,
+    pub sequence: i64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum RequestPayload {
     Ping(Ping),
@@ -189,6 +196,7 @@ pub enum RequestPayload {
     ConversationList,
     Load(LoadConversation),
     SystemPrompt(SystemPrompt),
+    Fork(Fork),
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -199,6 +207,7 @@ pub enum ArrakisRequest {
     ConversationList,
     Load { payload: LoadConversation },
     SystemPrompt { payload: SystemPrompt },
+    Fork { payload: Fork },
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

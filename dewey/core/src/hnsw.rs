@@ -1,13 +1,14 @@
+use ordered_float::OrderedFloat;
 use rand::{thread_rng, Rng};
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::io::{Read, Write};
 
 use chamber_common::Logger;
-use chamber_common::{error, info};
+use chamber_common::{error, get_data_dir, info};
 use serialize_macros::Serialize;
 
 use crate::cache::EmbeddingCache;
-use crate::config::get_data_dir;
 use crate::dbio::{get_directory, BLOCK_SIZE};
 use crate::openai::{Embedding, EMBED_DIM};
 use crate::serialization::Serialize;
@@ -33,9 +34,8 @@ pub fn normalize(embedding: &mut Embedding) {
     }
 }
 
+// embedding id -> (neighbor ids, distances)
 type Graph = HashMap<u64, Vec<(u64, f32)>>;
-
-const CACHE_SIZE: u32 = 20 * BLOCK_SIZE as u32;
 
 pub enum FilterComparator {
     Equal,
@@ -89,33 +89,58 @@ pub struct Query {
 
 // basic in-memory nearest neighbor index
 // TODO: should we handle huge datasets, beyond what memory can hold?
+//
+// NOTE: "top" layers (where nodes are most sparse) are the lower indices
+//       (e.g., 0, 1, 2, ...)
+//       whereas "bottom" layers (where nodes are most abundant are the upper indices
+//       (e.g., ..., n - 2, n - 1, n)
 #[derive(Serialize)]
 #[allow(unused_attributes)]
 pub struct HNSW {
     pub size: u32,
     pub layers: Vec<Graph>,
+    entry_id: Option<u64>,
+    thresholds: Vec<f32>,
 }
 
 impl HNSW {
     pub fn new(reindex: bool) -> Result<Self, std::io::Error> {
         if !reindex {
             info!("loading index from disk");
-            let data_dir = get_data_dir();
-            let hnsw = match Self::deserialize(data_dir.join("index").to_string_lossy().to_string())
-            {
-                Ok(h) => h,
-                Err(e) => {
-                    error!("Error reading index: {}", e);
-                    return Err(e);
-                }
-            };
+            let hnsw =
+                match Self::deserialize(get_data_dir().join("index").to_string_lossy().to_string())
+                {
+                    Ok(h) => h,
+                    Err(e) => match e.kind() {
+                        std::io::ErrorKind::NotFound => Self {
+                            size: 0,
+                            layers: Vec::new(),
+                            entry_id: None,
+                            thresholds: Vec::new(),
+                        },
+                        _ => {
+                            error!("Error reading index: {}", e);
+                            return Err(e);
+                        }
+                    },
+                };
 
             return Ok(hnsw);
         }
 
         info!("building index from block files");
 
-        let n = get_directory()?.len();
+        let directory = get_directory()?;
+        let n = directory.len();
+        if n == 0 {
+            return Ok(Self {
+                size: 0,
+                layers: Vec::new(),
+                entry_id: None,
+                thresholds: Vec::new(),
+            });
+        }
+
         let m = n.ilog2();
         let l = n.ilog2();
         let p = 1.0 / m as f32;
@@ -129,119 +154,36 @@ impl HNSW {
             .map(|j| p * (1.0 - p).powi((j as i32 - l as i32 + 1).abs()))
             .collect::<Vec<_>>();
 
-        // normalizing the probabilities since they don't usually add to 1
-        let thresh_sum = thresholds.iter().sum::<f32>();
-        let thresholds = thresholds
-            .iter()
-            .map(|&t| t / thresh_sum)
-            .collect::<Vec<_>>();
-
-        let mut orphans = HashSet::new();
-        for i in 0..n {
-            orphans.insert(i as u32);
-        }
-
         // TODO: config param?
-        let mut cache = EmbeddingCache::new(CACHE_SIZE)?;
+        let mut cache = EmbeddingCache::new(20 * BLOCK_SIZE as u32)?;
 
+        let mut entry_id: Option<u64> = None;
         let mut rng = thread_rng();
         let mut layers = vec![HashMap::new(); l as usize];
-        // for each embedding e[i]
-        for i in 0..n {
-            if i % (n / 10) == 0 {
-                info!(
-                    "{} connected nodes, {} orphans, {} nodes attempted",
-                    n - orphans.len(),
-                    orphans.len(),
-                    i + 1
-                );
-            }
-
+        for (id, _) in directory.id_map.iter() {
             let prob = rng.gen::<f32>();
+            let new_embedding = cache.get(*id as u32)?;
             for j in (0..l).rev() {
                 let j = j as usize;
-                // inserting the node into layer j
-                // on insertion, form connections between the new node
-                //               and the closest m neighbors in the layer
-                //
-                // each layer is a hashmap of ids to (node_id, distance) pairs
-                // there's a gross mixing of using IDs and the actual embedding index here
-                // this whole struct really needs a refactor
-                if prob < thresholds[j] {
-                    orphans.remove(&(i as u32));
-                    let e_i = cache.get(i as u32)?;
+                if prob < thresholds[j] || entry_id.is_none() {
+                    let eid = if entry_id.is_none() {
+                        Some(new_embedding.id)
+                    } else {
+                        entry_id
+                    };
 
-                    for k in (j as u32)..l {
-                        let k = k as usize;
-                        let layer: &mut Graph = layers.get_mut(k).unwrap();
-
-                        if layer.len() == 0 {
-                            layer.insert(e_i.id, Vec::new());
-                        } else {
-                            let distances: Vec<(u64, f32)> = layer
-                                .keys()
-                                .take(m as usize)
-                                .map(|&neighbor| {
-                                    let e_neighbor = cache.get(neighbor as u32).unwrap();
-                                    (neighbor, 1.0 - dot(&e_i, &e_neighbor))
-                                })
-                                .collect();
-
-                            let mut updates = Vec::new();
-                            for &(node, d) in distances.iter() {
-                                updates.push((node, e_i.id, d));
-                                updates.push((e_i.id, node, d));
-                            }
-
-                            for (key, value, d) in updates {
-                                let edges: &mut Vec<(u64, f32)> =
-                                    layer.entry(key).or_insert_with(Vec::new).as_mut();
-                                if !edges.contains(&(value, d)) {
-                                    edges.push((value, d));
-                                    edges.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-                                }
-                            }
-                        }
-                    }
+                    HNSW::insert_into_layer(
+                        &mut cache,
+                        eid.unwrap(),
+                        &mut layers[j],
+                        &new_embedding,
+                        200, // TODO: ????
+                    )?;
                 }
             }
-        }
 
-        info!("connecting {} orphans", orphans.len());
-        let bottom_layer: &mut Graph = layers.get_mut(l as usize - 1).unwrap();
-
-        // sorting here makes better use of the cache + how embeddings are loaded
-        let mut orphans = orphans.iter().collect::<Vec<_>>();
-        orphans.sort_by(|a, b| a.cmp(b));
-        for (i, orphan) in orphans.iter().enumerate() {
-            if i % (orphans.len() / 10) == 0 {
-                info!("{} orphans connected", i);
-            }
-
-            let orphan = **orphan as usize;
-            let e_orphan = cache.get(orphan as u32)?;
-            let distances: Vec<(u64, f32)> = bottom_layer
-                .keys()
-                .take(m as usize)
-                .map(|&neighbor| {
-                    let e_neighbor = cache.get(neighbor as u32).unwrap();
-                    (neighbor, 1.0 - dot(&e_orphan, &e_neighbor))
-                })
-                .collect();
-
-            let mut updates = Vec::new();
-            for &(node, d) in distances.iter() {
-                updates.push((node, e_orphan.id, d));
-                updates.push((e_orphan.id, node, d));
-            }
-
-            for (key, value, d) in updates {
-                let edges: &mut Vec<(u64, f32)> =
-                    bottom_layer.entry(key).or_insert_with(Vec::new).as_mut();
-                if !edges.contains(&(value, d)) {
-                    edges.push((value, d));
-                    edges.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-                }
+            if entry_id.is_none() {
+                entry_id = Some(new_embedding.id);
             }
         }
 
@@ -250,14 +192,129 @@ impl HNSW {
         Ok(Self {
             size: n as u32,
             layers,
+            entry_id,
+            thresholds,
         })
     }
 
-    // please god optimize this
-    // is this better than bfs?
+    pub fn insert(
+        &mut self,
+        cache: &mut EmbeddingCache,
+        embedding: &Embedding,
+    ) -> Result<(), std::io::Error> {
+        let l = self.layers.len();
+        let mut rng = thread_rng();
+        let prob = rng.gen::<f32>();
+        let thresholds = (0..l)
+            .map(|j| self.p * (1.0 - self.p).powi((j as i32 - l as i32 + 1).abs()))
+            .collect::<Vec<_>>();
+
+        for j in (0..l).rev() {
+            let j = j as usize;
+            if prob < thresholds[j] || self.entry_id.is_none() {
+                let eid = if self.entry_id.is_none() {
+                    Some(embedding.id)
+                } else {
+                    self.entry_id
+                };
+
+                HNSW::insert_into_layer(
+                    cache,
+                    eid.unwrap(),
+                    &mut self.layers[j],
+                    &embedding,
+                    200, // TODO: ????
+                )?;
+            }
+        }
+
+        if self.entry_id.is_none() {
+            self.entry_id = Some(embedding.id);
+        }
+
+        Ok(())
+    }
+
+    fn insert_into_layer(
+        cache: &mut EmbeddingCache,
+        entry_id: u64,
+        layer: &mut Graph,
+        query: &Embedding,
+        ef: usize,
+    ) -> Result<(), std::io::Error> {
+        let mut visited = HashSet::new();
+        let mut candidates: BinaryHeap<Reverse<(OrderedFloat<f32>, u64)>> = BinaryHeap::new();
+        let mut results: BinaryHeap<(OrderedFloat<f32>, u64)> = BinaryHeap::new();
+
+        let entry_node = cache.get(entry_id as u32)?;
+        let dist = 1.0 - dot(query, &entry_node);
+        candidates.push(Reverse((OrderedFloat(dist), entry_id)));
+        results.push((OrderedFloat(dist), entry_id));
+        visited.insert(entry_id);
+
+        while let Some(Reverse((curr_dist, curr_id))) = candidates.pop() {
+            let furthest_dist = results.peek().map(|(d, _)| d.0).unwrap_or(f32::MAX);
+
+            if curr_dist.0 > furthest_dist {
+                break;
+            }
+
+            if let Some(edges) = layer.get(&curr_id) {
+                for &(neighbor_id, _) in edges {
+                    if visited.contains(&neighbor_id) {
+                        continue;
+                    }
+
+                    visited.insert(neighbor_id);
+                    let neighbor = cache.get(neighbor_id as u32)?;
+                    let dist = 1.0 - dot(query, &*neighbor);
+
+                    if results.len() < ef || dist < furthest_dist {
+                        candidates.push(Reverse((OrderedFloat(dist), neighbor_id)));
+                        results.push((OrderedFloat(dist), neighbor_id));
+
+                        if results.len() > ef {
+                            results.pop();
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut new_neighbors = Vec::new();
+        for (d, id) in results.into_sorted_vec().iter() {
+            new_neighbors.push((*id, d.0));
+
+            let other_neighbors = layer.entry(*id).or_insert(Vec::new());
+            other_neighbors.push((*id, d.0));
+        }
+
+        let new_node = layer.entry(query.id).or_insert(Vec::new());
+        *new_node = new_neighbors.clone();
+
+        Ok(())
+    }
+
+    // TODO: please god optimize this
+    //       is this better than bfs?
+    //
+    // TODO: performance optimization?
+    //       scaling analysis?
+    //       literally anything beyond this leetcode-ass implementation?
     //
     // dfs search through the hnsw
-    pub fn query(&self, query: &Query, k: usize, ef: usize) -> Vec<(Box<Embedding>, f32)> {
+    pub fn query(
+        &self,
+        cache: &mut EmbeddingCache,
+        query: &Query,
+        k: usize,
+        ef: usize,
+    ) -> Vec<(Box<Embedding>, f32)> {
+        if self.layers.is_empty() {
+            return Vec::new();
+        }
+
+        // TODO: ??? a panic? really?
         if ef < k {
             panic!("ef must be greater than k");
         }
@@ -269,8 +326,6 @@ impl HNSW {
         // frankly just a stupid way of using this instead of a min heap
         // but rust f32 doesn't have Eq so i don't know how to work with it
         let mut top_k: Vec<(u64, f32)> = Vec::new();
-
-        let mut cache = EmbeddingCache::new(CACHE_SIZE).unwrap();
 
         let mut count = 0;
         let mut current = *self.layers[0].keys().next().unwrap();
@@ -414,8 +469,8 @@ impl HNSW {
         Ok(hnsw)
     }
 
-    pub fn get_last_layer(&self) -> &Graph {
-        self.layers.last().unwrap()
+    pub fn get_last_layer(&self) -> Option<&Graph> {
+        self.layers.last()
     }
 
     pub fn print_graph(&self) {

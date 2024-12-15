@@ -9,7 +9,7 @@ use chamber_common::{error, info};
 use crate::dbio::{get_directory, read_embedding_block, BLOCK_SIZE};
 use crate::openai::Embedding;
 
-// most of this is ripped from https://rust-unofficial.github.io/too-many-lists/sixth-final.html
+// TODO: most of this is ripped from https://rust-unofficial.github.io/too-many-lists/sixth-final.html
 // this really could use some cleaning up
 pub struct LinkedList<T> {
     front: Link<T>,

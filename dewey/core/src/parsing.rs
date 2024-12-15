@@ -467,7 +467,7 @@ mod tests {
             truth.push((random_unicode_string(length), subset));
         }
 
-        let root = crate::config::get_home_dir();
+        let root = chamber_common::get_root_dir();
         let contents = truth
             .iter()
             .map(|p| p.0.clone())
@@ -523,7 +523,7 @@ mod tests {
             truth.push((random_unicode_string(TOKEN_LIMIT), subset));
         }
 
-        let root = crate::config::get_home_dir();
+        let root = chamber_common::get_root_dir();
         let contents = truth
             .iter()
             .map(|p| p.0.clone())
@@ -577,7 +577,7 @@ mod tests {
             truth.push((random_unicode_string(length), subset));
         }
 
-        let root = crate::config::get_home_dir();
+        let root = chamber_common::get_root_dir();
         let contents = truth
             .iter()
             .map(|p| p.0.clone())

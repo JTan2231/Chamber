@@ -262,9 +262,10 @@ impl EmbeddingApiClient for TestApiCall {
 
 // multithreaded wrapper over the actual bulk API call
 pub fn embed_bulk(sources: &Vec<EmbeddingSource>) -> Result<Vec<Embedding>, std::io::Error> {
+    println!("embedding bulk");
     let params = RequestParams::new();
 
-    // there's probably a better programmatic way of determining this
+    // TODO: there's probably a better programmatic way of determining this
     const NUM_THREADS: usize = 8;
     let mut thread_pool = Vec::new();
     let (tx, rx) = std::sync::mpsc::channel::<Vec<(EmbeddingSource, String)>>();
@@ -278,6 +279,7 @@ pub fn embed_bulk(sources: &Vec<EmbeddingSource>) -> Result<Vec<Embedding>, std:
 
     // API requests need batched up to keep from exceeding token limits
     let batches = batch_sources(&sources)?;
+    println!("finished batching");
 
     let embeddings = Arc::new(Mutex::new(Vec::new()));
     let count = Arc::new(Mutex::new(0));
