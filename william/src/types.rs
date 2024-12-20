@@ -319,7 +319,7 @@ impl Conversation {
     // basic order here is something like:
     // - upsert conversation table
     // - upsert each message item (for setting IDs + updating contents)
-    // - reset links
+    // - reset paths
     pub fn upsert(&mut self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {
         if self.id.is_none() {
             db.execute(
@@ -340,13 +340,13 @@ impl Conversation {
         }
 
         db.execute(
-            "DELETE FROM links WHERE conversation_id = ?1",
+            "DELETE FROM paths WHERE conversation_id = ?1",
             params![self.id],
         )?;
 
         for (sequence, message) in self.messages.iter().enumerate() {
             db.execute(
-                "INSERT INTO links (conversation_id, message_id, sequence) VALUES (?1, ?2, ?3)",
+                "INSERT INTO paths (conversation_id, message_id, sequence) VALUES (?1, ?2, ?3)",
                 params![self.id, message.id, sequence as i64],
             )?;
         }

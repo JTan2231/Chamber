@@ -11,3 +11,8 @@ serde_json = "1.0.133"
 native-tls = "0.2.12"
 rusqlite = "0.32.1"
 dewey-core = { path = "../dewey/core" }
+uuid = { version = "1.11.0", features = ["v4"] }
+fancy-regex = "0.14.0"
+rustc-hash = "2.1.0"
+bstr = "1.11.1"
+base64 = "0.22.1"

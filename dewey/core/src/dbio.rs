@@ -114,6 +114,9 @@ fn get_next_id() -> Result<u64, std::io::Error> {
 // TODO: we need to implement handling for embedding DBs
 //       that don't fit in memory
 //       and this needs to happen project-wide
+//
+// TODO: decide how much this is really needed
+//       right now it's not being used
 pub fn sync_index(full_embed: bool) -> Result<(), std::io::Error> {
     let stale_sources = match full_embed {
         true => crate::ledger::read_ledger()?
@@ -196,6 +199,8 @@ pub fn sync_index(full_embed: bool) -> Result<(), std::io::Error> {
 
 // optimizes embedding placement in blocks based on their distance from their neighbors
 // also syncs meta changes from the ledger
+//
+// TODO: needs refactored to fit william integration
 pub fn reblock() -> Result<(), std::io::Error> {
     let index = match HNSW::new(false) {
         Ok(index) => index,
@@ -227,7 +232,7 @@ pub fn reblock() -> Result<(), std::io::Error> {
             continue;
         }
 
-        if visited.len() % (full_graph.len() / 10) == 0 {
+        if full_graph.len() > 10 && visited.len() % (full_graph.len() / 10) == 0 {
             info!("blocked {} nodes into {} blocks", visited.len(), i + 1);
         }
 
@@ -429,7 +434,14 @@ pub fn get_all_blocks() -> Result<Vec<BlockEmbedding>, std::io::Error> {
 //         - embedding blocks
 pub fn get_directory() -> Result<Directory, std::io::Error> {
     let directory =
-        std::fs::read_to_string(format!("{}/directory", get_data_dir().to_str().unwrap()))?;
+        match std::fs::read_to_string(format!("{}/directory", get_data_dir().to_str().unwrap())) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                error!("error reading directory file: {}", e);
+                return Err(e);
+            }
+        };
     let directory = directory
         .split("\n")
         .filter(|l| !l.is_empty())
@@ -524,6 +536,15 @@ pub fn update_file_embeddings(filepath: &str, index: &mut HNSW) -> Result<(), st
     Ok(())
 }
 
+/// this adds a new embedding to the embedding store
+///
+/// the last block is chosen (arbitrarily) as its new home
+/// the directory file is also updated with an entry for the new embedding
+///
+/// this _does not_ affect the HNSW index--in-memory or otherwise
+/// updates to the index should take place with that struct directly
+/// this function here is specifically for adding the embeddings
+/// to the file system
 pub fn add_new_embedding(embedding: &mut Embedding) -> Result<(), std::io::Error> {
     let last_block_number = match std::fs::read_dir(get_data_dir())
         .unwrap()
@@ -560,5 +581,16 @@ pub fn add_new_embedding(embedding: &mut Embedding) -> Result<(), std::io::Error
         "{}/{}",
         get_data_dir().to_str().unwrap(),
         block.block
-    ))
+    ))?;
+
+    let mut directory = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(get_data_dir().join("directory"))?;
+
+    writeln!(
+        directory,
+        "\n{} {} {}",
+        embedding.id, embedding.source_file.filepath, last_block_number
+    )
 }

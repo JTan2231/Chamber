@@ -37,11 +37,8 @@ pub fn setup() {
     let local_path = chamber_common::get_local_dir();
     let data_path = chamber_common::get_data_dir();
 
-    let queries_path = local_path.join("queries");
-
     create_if_nonexistent(&local_path);
     create_if_nonexistent(&data_path);
-    create_if_nonexistent(&queries_path);
 
     touch_file(&local_path.join("ledger"));
     touch_file(&local_path.join("id_counter"));

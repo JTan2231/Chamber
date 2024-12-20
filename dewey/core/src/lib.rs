@@ -25,21 +25,8 @@ impl Dewey {
     pub fn new() -> Result<Self, std::io::Error> {
         crate::config::setup();
 
-        // basic index setup/initialization
-
-        // TODO: error handling
-        ledger::sync_ledger_config().unwrap();
-        dbio::sync_index(false)?;
-
-        {
-            let index = hnsw::HNSW::new(true)?;
-            index.serialize(&get_data_dir().join("index").to_str().unwrap().to_string())?;
-        }
-
-        dbio::reblock()?;
-
         Ok(Self {
-            index: HNSW::new(true)?,
+            index: HNSW::new(false)?,
             cache: EmbeddingCache::new((20 * BLOCK_SIZE) as u32)?,
         })
     }
@@ -47,32 +34,12 @@ impl Dewey {
     // TODO: better define how filters should be passed
     pub fn query(
         &mut self,
-        query: String,
+        query_filepath: &str,
         filters: Vec<String>,
         k: usize,
     ) -> Result<Vec<EmbeddingSource>, std::io::Error> {
-        let timestamp = chrono::Utc::now().timestamp_micros();
-
-        // TODO: better file handling + all that
-        let path = std::path::PathBuf::from("/tmp")
-            .join("dewey_queries")
-            .join(timestamp.to_string());
-        match std::fs::write(path.clone(), query) {
-            Ok(_) => {
-                info!("Wrote query to {}", path.to_string_lossy());
-            }
-            Err(e) => {
-                error!(
-                    "error writing query to file {}: {}",
-                    path.to_string_lossy(),
-                    e
-                );
-                return Err(e);
-            }
-        };
-
         let embedding = match embed(&EmbeddingSource {
-            filepath: path.to_string_lossy().to_string(),
+            filepath: query_filepath.to_string(),
             meta: std::collections::HashSet::new(),
             subset: None,
         }) {
@@ -106,6 +73,15 @@ impl Dewey {
         crate::dbio::update_file_embeddings(&filepath, &mut self.index)
     }
 
+    /// add a new embedding to the system from the given file
+    ///
+    /// this updates both:
+    /// - the embedding store in the OS file system
+    /// - the in-memory HNSW index
+    ///
+    /// alongside related metadata + other housekeeping files in the OS filesystem:
+    /// - embedding store directory
+    /// - HNSW index file
     pub fn add_embedding(&mut self, filepath: String) -> Result<(), std::io::Error> {
         let mut embedding = embed(&EmbeddingSource {
             filepath,
@@ -113,9 +89,42 @@ impl Dewey {
             meta: std::collections::HashSet::new(),
         })?;
 
-        dbio::add_new_embedding(&mut embedding);
+        // TODO: ledger integration here at some point
+        //       from what I understand the ledger is only for syncing
+        //       between the local file system and the embedding store
+        //       since William is adding things to the store directly,
+        //       it can bypass the ledger
+        //       but it would be nice to have file/embedding syncing
+        //       and tracking all taking place in one spot (the ledger)
 
-        self.index.insert(&mut self.cache, &embedding)?;
+        match dbio::add_new_embedding(&mut embedding) {
+            Ok(_) => {}
+            Err(e) => {
+                error!("error adding embedding to store: {}", e);
+                return Err(e);
+            }
+        };
+
+        self.cache.refresh_directory()?;
+
+        match self.index.insert(&mut self.cache, &embedding) {
+            Ok(_) => {}
+            Err(e) => {
+                error!("error adding embedding to index: {}", e);
+                return Err(e);
+            }
+        };
+
+        match self
+            .index
+            .serialize(&get_data_dir().join("index").to_str().unwrap().to_string())
+        {
+            Ok(_) => {}
+            Err(e) => {
+                error!("error serializing index: {}", e);
+                return Err(e);
+            }
+        };
 
         Ok(())
     }

@@ -1,10 +1,12 @@
 use rusqlite::params;
 
 use chamber_common::{error, get_config_dir, get_local_dir, get_root_dir, lprint, Logger};
+use dewey_lib::Dewey;
 
 use crate::types::*;
 
 mod network;
+mod tiktoken;
 mod types;
 
 fn create_if_nonexistent(path: &std::path::PathBuf) {
@@ -21,12 +23,17 @@ fn get_conversations_dir() -> std::path::PathBuf {
     local.join("conversations")
 }
 
+fn get_embeddings_dir() -> std::path::PathBuf {
+    get_local_dir().join("messages")
+}
+
 // TODO: a lot of this setup code needs abstracted to a common module
 fn setup() {
     // TODO: better path config handling
     chamber_common::Workspace::new("/home/joey/.local/william");
 
     create_if_nonexistent(&get_local_dir());
+    create_if_nonexistent(&get_embeddings_dir());
     create_if_nonexistent(&get_config_dir());
     create_if_nonexistent(&get_root_dir().join("logs"));
 
@@ -157,6 +164,13 @@ CREATE TABLE IF NOT EXISTS messages (
     FOREIGN KEY (api_config_id) REFERENCES api_configurations(id)
 );
 
+CREATE TABLE IF NOT EXISTS message_embeddings (
+    id INTEGER PRIMARY KEY,
+    message_id INTEGER NOT NULL,
+    filepath TEXT NOT NULL,
+    FOREIGN KEY (message_id) REFERENCES messages(id)
+);
+
 CREATE TABLE IF NOT EXISTS paths (
     id INTEGER PRIMARY KEY,
     conversation_id INTEGER NOT NULL,
@@ -175,32 +189,120 @@ CREATE TABLE IF NOT EXISTS forks (
 );
 "#;
 
-// TODO: error handling for the results here
+// TODO: optimize this
+//       this should be done in batch
 //
-// NOTE: this _does not_ create a new message for the response
-//       the last message in the conversation is expected to be
-//       a placeholder to be filled here for the Assistant
-fn completion(
-    websocket: &mut tungstenite::WebSocket<std::net::TcpStream>,
-    mut payload: Conversation,
+// TODO: there should probably be some decoupling
+//       between Dewey and the SQLite db
+fn add_message_embedding(
+    dewey: &mut Dewey,
     db: &rusqlite::Connection,
-) {
-    // this needs to be async
-    if is_valid_guid(&payload.name) {
+    message: &Message,
+    filepath: &str,
+) -> Result<(), std::io::Error> {
+    let exists: bool = db
+        .query_row(
+            "SELECT 1 FROM message_embeddings WHERE message_id = ?1 LIMIT 1",
+            params![message.id],
+            |_row| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if exists {
+        return Ok(());
+    }
+
+    std::fs::write(filepath, message.content.clone())?;
+
+    db.execute(
+        "INSERT INTO message_embeddings (message_id, filepath) VALUES (?1, ?2)",
+        params![message.id, filepath],
+    )
+    .unwrap();
+
+    dewey.add_embedding(filepath.to_string())?;
+
+    Ok(())
+}
+
+fn build_system_prompt(
+    conversation_len: usize,
+    filepath: &str,
+    dewey: &mut Dewey,
+    tokenizer: &tiktoken::Tokenizer,
+) -> String {
+    // TODO: error handling
+    // TODO: tokenizer integration in dewey
+    let dewey_sources = dewey.query(filepath, Vec::new(), 5).unwrap();
+
+    let mut prompt = "<systemPrompt>".to_string();
+    prompt.push_str(r#"
+        <objective>
+            Determine whether to use the following references to inform your response, and do so without explicitly acknowledging it.
+            Incorporate into your judgment whether this moves the conversation forward, in the same direction as the user.
+            If you decide to use it, do so in a friendly, familiar manner--leave what should stay unsaid, but implicitly acknowledge the history.
+            If reasonable, try and use the references to fill in contextual gaps.
+        </objective>
+    "#);
+
+    prompt.push_str("<references>");
+    for source in dewey_sources {
+        if conversation_len + tokenizer.encode(&prompt).len() > 4096 {
+            break;
+        }
+
+        // TODO: error handling
+        let contents = std::fs::read_to_string(source.filepath).unwrap();
+
+        let contents = contents[..std::cmp::min(512, contents.len())].to_string();
+        prompt.push_str(&format!("<reference>{}</reference>", contents));
+    }
+
+    prompt.push_str("</references>");
+    prompt.push_str("</systemPrompt>");
+
+    prompt
+}
+
+fn cutoff_messages(
+    messages: &Vec<Message>,
+    tokenizer: &tiktoken::Tokenizer,
+) -> (usize, Vec<Message>) {
+    let mut cutoff = messages.len() - 1;
+    let mut total_len = 0;
+    for m in messages.iter().rev() {
+        if m.content.is_empty() {
+            continue;
+        }
+
+        total_len += tokenizer.encode(&m.content).len();
+
+        // TODO: centralize context window limits for each model
+        if total_len < 4096 {
+            cutoff = std::cmp::max(0, cutoff - 1);
+        }
+    }
+
+    (total_len, messages[cutoff..].to_vec())
+}
+
+fn generate_name(conversation: &mut Conversation) {
+    // TODO: this needs to be async
+    if is_valid_guid(&conversation.name) {
         let new_name = network::prompt(
             API::OpenAI(OpenAIModel::GPT4oMini),
             &r#"
-                                You will be given the start of a conversation.
-                                Give it a name.
-                                Guidelines:
-                                - No markdown
-                                - Respond with _only_ the name.
-                                "#
+            You will be given the start of a conversation.
+            Give it a name.
+            Guidelines:
+            - No markdown
+            - Respond with _only_ the name.
+            "#
             .to_string(),
-            &vec![payload.messages[0].clone()],
+            &vec![conversation.messages[0].clone()],
         );
 
-        payload.name = new_name
+        conversation.name = new_name
             .unwrap()
             .content
             .chars()
@@ -211,19 +313,52 @@ fn completion(
             })
             .collect();
     }
+}
+
+// TODO: error handling for the results here
+//
+// NOTE: this _does not_ create a new message for the response
+//       the last message in the conversation is expected to be
+//       a placeholder to be filled here for the Assistant
+fn completion(
+    websocket: &mut tungstenite::WebSocket<std::net::TcpStream>,
+    mut conversation: Conversation,
+    tokenizer: &tiktoken::Tokenizer,
+    db: &rusqlite::Connection,
+    dewey: &mut Dewey,
+) {
+    generate_name(&mut conversation);
 
     // the conversation needs to be set with a db ID at this point
-    let mut saved_conversation = payload.clone();
-    saved_conversation.upsert(db).unwrap();
+    conversation.upsert(db).unwrap();
+
+    let (total_len, messages_payload) = cutoff_messages(&conversation.messages, &tokenizer);
+
+    let last_user_message = messages_payload
+        .iter()
+        .rev()
+        .find(|m| m.message_type == MessageType::User)
+        .unwrap();
+
+    let filepath = get_embeddings_dir()
+        .join(uuid::Uuid::new_v4().to_string())
+        .to_string_lossy()
+        .to_string();
+
+    // TODO: error handling
+    // TODO: system prompt building needs to be more fleshed out
+    //       like, minimum sized system prompts?
+    std::fs::write(&filepath, last_user_message.content.clone()).unwrap();
+    let system_prompt = build_system_prompt(total_len, &filepath, dewey, tokenizer);
+
+    // TODO: error handling
+    add_message_embedding(dewey, db, last_user_message, &filepath).unwrap();
 
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
         match network::prompt_stream(
-            &payload
-                .messages
-                .iter()
-                .map(|m| Message::from(m.clone()))
-                .collect(),
+            &messages_payload[..messages_payload.len() - 1].to_vec(),
+            system_prompt,
             tx,
         ) {
             Ok(_) => {}
@@ -237,16 +372,16 @@ fn completion(
     loop {
         match rx.recv() {
             Ok(message) => {
-                let request_id = saved_conversation.messages[saved_conversation.messages.len() - 2]
+                let request_id = conversation.messages[conversation.messages.len() - 2]
                     .id
                     .unwrap();
 
-                let last = saved_conversation.messages.last_mut().unwrap();
+                let last = conversation.messages.last_mut().unwrap();
                 last.content.push_str(&message);
 
-                let conversation_id = saved_conversation.id.unwrap();
+                let conversation_id = conversation.id.unwrap();
                 let response_id = last.id.unwrap();
-                let conversation_name = saved_conversation.name.clone();
+                let conversation_name = conversation.name.clone();
 
                 let response = serde_json::to_string(&ArrakisResponse {
                     payload: ResponsePayload::Completion(Completion {
@@ -288,7 +423,11 @@ fn completion(
                     }
                 };
 
-                saved_conversation.upsert(db).unwrap();
+                conversation.upsert(db).unwrap();
+
+                // TODO: error handling
+                add_message_embedding(dewey, db, conversation.messages.last().unwrap(), &filepath)
+                    .unwrap();
 
                 break;
             }
@@ -311,7 +450,7 @@ fn get_conversation(conversation_id: i64, db: &rusqlite::Connection) -> Conversa
                 m.system_prompt,
                 l.sequence
             FROM conversations c
-            JOIN links l ON c.id = l.conversation_id
+            JOIN paths l ON c.id = l.conversation_id
             JOIN messages m ON l.message_id = m.id
             JOIN models api ON m.api_config_id = api.id
             WHERE c.id = ?1
@@ -367,6 +506,10 @@ fn get_conversation(conversation_id: i64, db: &rusqlite::Connection) -> Conversa
 fn main() {
     setup();
 
+    let tokenizer_ = std::sync::Arc::new(std::sync::Mutex::new(
+        tiktoken::Tokenizer::new(&get_local_dir().join("o200k_base.tiktoken")).unwrap(),
+    ));
+
     let db_ = std::sync::Arc::new(std::sync::Mutex::new(
         rusqlite::Connection::open(get_local_dir().join("william.sqlite"))
             .expect("Failed to open database"),
@@ -379,13 +522,13 @@ fn main() {
 
     let dewey_ = std::sync::Arc::new(std::sync::Mutex::new(dewey_lib::Dewey::new().unwrap()));
 
-    return;
-
     let server = std::net::TcpListener::bind("127.0.0.1:9001").unwrap();
     println!("WebSocket server listening on ws://127.0.0.1:9001");
 
     for stream in server.incoming() {
+        let tokenizer = std::sync::Arc::clone(&tokenizer_);
         let db = std::sync::Arc::clone(&db_);
+        let dewey = std::sync::Arc::clone(&dewey_);
         std::thread::spawn(move || {
             let stream = stream.unwrap();
             let mut websocket = tungstenite::accept(stream).unwrap();
@@ -419,7 +562,13 @@ fn main() {
 
                 match request {
                     ArrakisRequest::Completion { payload } => {
-                        completion(&mut websocket, payload, &db.lock().unwrap());
+                        completion(
+                            &mut websocket,
+                            payload,
+                            &tokenizer.lock().unwrap(),
+                            &db.lock().unwrap(),
+                            &mut dewey.lock().unwrap(),
+                        );
                     }
                     ArrakisRequest::Ping { payload: _ } => {
                         let response = serde_json::to_string(&ArrakisResponse {
@@ -574,7 +723,13 @@ fn main() {
                         db.execute(fork_query, params![payload.conversation_id, new_id])
                             .unwrap();
 
-                        completion(&mut websocket, conversation, &db);
+                        completion(
+                            &mut websocket,
+                            conversation,
+                            &tokenizer.lock().unwrap(),
+                            &db,
+                            &mut dewey.lock().unwrap(),
+                        );
                     }
                 };
             }

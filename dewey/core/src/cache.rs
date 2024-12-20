@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::fmt::{self, Debug};
 use std::marker::PhantomData;
-use std::ptr::NonNull;
+use std::sync::{Arc, Mutex};
 
 use chamber_common::Logger;
 use chamber_common::{error, info};
@@ -11,14 +10,14 @@ use crate::openai::Embedding;
 
 // TODO: most of this is ripped from https://rust-unofficial.github.io/too-many-lists/sixth-final.html
 // this really could use some cleaning up
-pub struct LinkedList<T> {
+pub struct LinkedList<T: Clone> {
     front: Link<T>,
     back: Link<T>,
     len: usize,
     _boo: PhantomData<T>,
 }
 
-type Link<T> = Option<NonNull<Node<T>>>;
+type Link<T> = Option<Arc<Mutex<Node<T>>>>;
 
 pub struct Node<T> {
     elem: T,
@@ -26,37 +25,27 @@ pub struct Node<T> {
     back: Link<T>,
 }
 
-pub struct Iter<'a, T> {
-    front: Link<T>,
-    len: usize,
-    _boo: PhantomData<&'a T>,
-}
-
-pub struct IterMut<'a, T> {
-    front: Link<T>,
-    len: usize,
-    _boo: PhantomData<&'a mut T>,
-}
-
 impl<T: Clone> Node<T> {
-    pub fn detach(&mut self) -> T {
-        if let Some(front) = self.front {
-            unsafe {
-                (*front.as_ptr()).back = self.back;
-            }
+    pub fn detach(node: &Arc<Mutex<Node<T>>>) -> T {
+        let node_lock = node.lock().unwrap();
+        let front = node_lock.front.clone();
+        let back = node_lock.back.clone();
+        let elem = node_lock.elem.clone();
+
+        if let Some(front_node) = front.as_ref() {
+            let mut front_lock = front_node.lock().unwrap();
+            front_lock.back = back.clone();
         }
 
-        if let Some(back) = self.back {
-            unsafe {
-                (*back.as_ptr()).front = self.front;
-            }
+        if let Some(back_node) = back.as_ref() {
+            let mut back_lock = back_node.lock().unwrap();
+            back_lock.front = front.clone();
         }
-
-        self.elem.clone()
+        elem
     }
 }
 
-impl<T> LinkedList<T> {
+impl<T: Clone> LinkedList<T> {
     pub fn new() -> Self {
         LinkedList {
             front: None,
@@ -66,134 +55,56 @@ impl<T> LinkedList<T> {
         }
     }
 
-    pub fn push_front(&mut self, elem: T) -> NonNull<Node<T>> {
-        unsafe {
-            let new = NonNull::new_unchecked(Box::into_raw(Box::new(Node {
-                front: None,
-                back: None,
-                elem,
-            })));
+    pub fn push_front(&mut self, elem: T) -> Arc<Mutex<Node<T>>> {
+        let new = Arc::new(Mutex::new(Node {
+            front: None,
+            back: None,
+            elem,
+        }));
 
-            if let Some(old) = self.front {
-                (*old.as_ptr()).front = Some(new);
-                (*new.as_ptr()).back = Some(old);
+        if let Some(old) = self.front.take() {
+            let mut old_lock = old.lock().unwrap();
+            old_lock.front = Some(Arc::clone(&new));
+        } else {
+            self.back = Some(Arc::clone(&new));
+        }
+
+        if let Some(front) = &self.front {
+            let mut front_lock = front.lock().unwrap();
+            front_lock.back = self.back.clone();
+        }
+
+        self.front = Some(new.clone());
+        self.len += 1;
+
+        new
+    }
+
+    pub fn pop_back(&mut self) -> Option<T>
+    where
+        T: Clone,
+    {
+        self.back.take().map(|node| {
+            let mut node_lock = node.lock().unwrap();
+            let result = node_lock.elem.clone();
+
+            self.back = node_lock.front.take();
+            if let Some(new_back) = &self.back {
+                let mut new_back_lock = new_back.lock().unwrap();
+                new_back_lock.back = None;
             } else {
-                self.back = Some(new);
+                self.front = None;
             }
 
-            self.front = Some(new);
-            self.len += 1;
-        }
-
-        self.front.unwrap()
-    }
-
-    pub fn pop_back(&mut self) -> Option<T> {
-        unsafe {
-            self.back.map(|node| {
-                let boxed_node = Box::from_raw(node.as_ptr());
-                let result = boxed_node.elem;
-
-                self.back = boxed_node.front;
-                if let Some(new) = self.back {
-                    (*new.as_ptr()).back = None;
-                } else {
-                    self.front = None;
-                }
-
-                if self.len > 0 {
-                    self.len -= 1;
-                }
-                result
-            })
-        }
-    }
-
-    pub fn iter(&self) -> Iter<T> {
-        Iter {
-            front: self.front,
-            len: self.len,
-            _boo: PhantomData,
-        }
-    }
-
-    pub fn iter_mut(&mut self) -> IterMut<T> {
-        IterMut {
-            front: self.front,
-            len: self.len,
-            _boo: PhantomData,
-        }
+            self.len -= 1;
+            result
+        })
     }
 }
 
-impl<T> Drop for LinkedList<T> {
+impl<T: Clone> Drop for LinkedList<T> {
     fn drop(&mut self) {
         while self.pop_back().is_some() {}
-    }
-}
-
-// zero clue how these iterator impls work
-impl<'a, T> IntoIterator for &'a mut LinkedList<T> {
-    type IntoIter = IterMut<'a, T>;
-    type Item = &'a mut T;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_mut()
-    }
-}
-
-impl<'a, T> IntoIterator for &'a LinkedList<T> {
-    type IntoIter = Iter<'a, T>;
-    type Item = &'a T;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-impl<'a, T> Iterator for IterMut<'a, T> {
-    type Item = &'a mut T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.len > 0 {
-            self.front.map(|node| unsafe {
-                self.len -= 1;
-                self.front = (*node.as_ptr()).back;
-                &mut (*node.as_ptr()).elem
-            })
-        } else {
-            None
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.len, Some(self.len))
-    }
-}
-
-impl<'a, T> Iterator for Iter<'a, T> {
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.len > 0 {
-            self.front.map(|node| unsafe {
-                self.len -= 1;
-                self.front = (*node.as_ptr()).back;
-                &(*node.as_ptr()).elem
-            })
-        } else {
-            None
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.len, Some(self.len))
-    }
-}
-
-impl<T: Debug> Debug for LinkedList<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_list().entries(self).finish()
     }
 }
 
@@ -207,7 +118,7 @@ impl<T: Debug> Debug for LinkedList<T> {
 //       but is it even worth it? how bad are cold starts?
 pub struct EmbeddingCache {
     lru: LinkedList<u32>,
-    node_map: HashMap<u32, NonNull<Node<u32>>>,
+    node_map: HashMap<u32, Arc<Mutex<Node<u32>>>>,
     embeddings: HashMap<u32, Embedding>,
     directory: HashMap<u32, u64>,
 
@@ -220,6 +131,7 @@ pub struct EmbeddingCache {
     max_size: u32,
 }
 
+// TODO: PLEASE god test this properly
 impl EmbeddingCache {
     pub fn new(max_size: u32) -> Result<Self, std::io::Error> {
         info!("initializing embedding cache with max size {}", max_size);
@@ -265,10 +177,8 @@ impl EmbeddingCache {
 
             let id = e.id as u32;
             if let Some(node) = self.node_map.get(&id) {
-                unsafe {
-                    (*node.as_ptr()).detach();
-                    self.lru.len -= 1;
-                }
+                Node::detach(node);
+                self.lru.len -= 1;
             }
 
             let new_node = self.lru.push_front(id);
@@ -306,18 +216,12 @@ impl EmbeddingCache {
             }
         };
 
-        // move the LRU node
         let node = self.node_map.get(&embedding_id).unwrap();
-        unsafe {
-            let new_node = self.lru.push_front(embedding_id);
+        let new_node = self.lru.push_front(embedding_id);
 
-            // does this actually deallocate anything lol
-            // should have done this in c
-            (*node.as_ptr()).detach();
-            self.lru.len -= 1;
+        Node::detach(node);
 
-            self.node_map.insert(embedding_id, new_node);
-        }
+        self.node_map.insert(embedding_id, new_node);
 
         // TODO: stack + heap allocation? really?
         self.embeddings.entry(embedding_id).and_modify(|e| {
@@ -325,5 +229,17 @@ impl EmbeddingCache {
         });
 
         Ok(Box::new(embedding))
+    }
+
+    pub fn refresh_directory(&mut self) -> Result<(), std::io::Error> {
+        self.directory = match get_directory() {
+            Ok(d) => d.id_map,
+            Err(e) => {
+                error!("error refreshing cache directory: {}", e);
+                return Err(e);
+            }
+        };
+
+        Ok(())
     }
 }

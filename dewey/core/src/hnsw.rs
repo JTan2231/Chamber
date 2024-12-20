@@ -152,6 +152,7 @@ impl HNSW {
 
         let thresholds = (0..l)
             .map(|j| p * (1.0 - p).powi((j as i32 - l as i32 + 1).abs()))
+            .rev()
             .collect::<Vec<_>>();
 
         // TODO: config param?
@@ -163,7 +164,7 @@ impl HNSW {
         for (id, _) in directory.id_map.iter() {
             let prob = rng.gen::<f32>();
             let new_embedding = cache.get(*id as u32)?;
-            for j in (0..l).rev() {
+            for j in 0..l {
                 let j = j as usize;
                 if prob < thresholds[j] || entry_id.is_none() {
                     let eid = if entry_id.is_none() {
@@ -197,21 +198,41 @@ impl HNSW {
         })
     }
 
+    // NOTE: the directory _needs_ to have been updated
+    //       through dbio.rs
+    //
+    // TODO: how? this should be much cleaner
     pub fn insert(
         &mut self,
         cache: &mut EmbeddingCache,
         embedding: &Embedding,
     ) -> Result<(), std::io::Error> {
-        let l = self.layers.len();
+        let l = if self.layers.is_empty() || self.size.ilog2() > self.layers.len() as u32 {
+            let n = std::cmp::max(1, self.size);
+            let log = std::cmp::max(1, n.ilog2());
+            let p = 1.0 / log as f32;
+
+            let mut new_layer = Graph::new();
+            if self.entry_id.is_some() {
+                new_layer.insert(self.entry_id.unwrap(), Vec::new());
+            }
+
+            self.layers.push(new_layer);
+            self.thresholds = (0..log)
+                .map(|j| p * (1.0 - p).powi((j as i32 - log as i32 + 1).abs()))
+                .rev()
+                .collect::<Vec<_>>();
+
+            self.layers.len()
+        } else {
+            self.layers.len()
+        };
         let mut rng = thread_rng();
         let prob = rng.gen::<f32>();
-        let thresholds = (0..l)
-            .map(|j| self.p * (1.0 - self.p).powi((j as i32 - l as i32 + 1).abs()))
-            .collect::<Vec<_>>();
 
-        for j in (0..l).rev() {
+        for j in 0..l {
             let j = j as usize;
-            if prob < thresholds[j] || self.entry_id.is_none() {
+            if prob < self.thresholds[j] || self.entry_id.is_none() {
                 let eid = if self.entry_id.is_none() {
                     Some(embedding.id)
                 } else {
@@ -232,6 +253,8 @@ impl HNSW {
             self.entry_id = Some(embedding.id);
         }
 
+        self.size += 1;
+
         Ok(())
     }
 
@@ -242,6 +265,11 @@ impl HNSW {
         query: &Embedding,
         ef: usize,
     ) -> Result<(), std::io::Error> {
+        if layer.is_empty() {
+            layer.insert(query.id, Vec::new());
+            return Ok(());
+        }
+
         let mut visited = HashSet::new();
         let mut candidates: BinaryHeap<Reverse<(OrderedFloat<f32>, u64)>> = BinaryHeap::new();
         let mut results: BinaryHeap<(OrderedFloat<f32>, u64)> = BinaryHeap::new();
@@ -286,7 +314,7 @@ impl HNSW {
             new_neighbors.push((*id, d.0));
 
             let other_neighbors = layer.entry(*id).or_insert(Vec::new());
-            other_neighbors.push((*id, d.0));
+            other_neighbors.push((query.id, d.0));
         }
 
         let new_node = layer.entry(query.id).or_insert(Vec::new());
@@ -328,75 +356,87 @@ impl HNSW {
         let mut top_k: Vec<(u64, f32)> = Vec::new();
 
         let mut count = 0;
-        let mut current = *self.layers[0].keys().next().unwrap();
-        for layer in self.layers.iter() {
+        let mut current = self.entry_id.unwrap();
+        for layer in self.layers.iter().rev() {
+            if layer.is_empty() {
+                continue;
+            }
+
             let mut stack = Vec::new();
             stack.push(current);
 
             while !stack.is_empty() {
                 current = stack.pop().unwrap();
-                let mut neighbors = layer
-                    .get(&current)
-                    .unwrap()
-                    .clone()
-                    .into_iter()
-                    .filter_map(|(n, _)| {
-                        if blacklist[n as usize] {
-                            return None;
+                if let Some(current_neighbors) = layer.get(&current) {
+                    let mut neighbors = current_neighbors
+                        .clone()
+                        .into_iter()
+                        .filter_map(|(n, _)| {
+                            // TODO: the fact that we need to increment/decrement
+                            //       the IDs is obscenely stupid
+                            let n = n - 1;
+                            if blacklist[n as usize] {
+                                return None;
+                            }
+
+                            let e_n = cache.get(n as u32 + 1).unwrap();
+                            let mut filter_pass = true;
+                            for filter in query.filters.iter() {
+                                for meta in e_n.source_file.meta.iter() {
+                                    filter_pass &= filter.compare(meta);
+                                }
+                            }
+
+                            if !visited[n as usize] && filter_pass {
+                                Some((n, 1.0 - dot(&query.embedding, &e_n)))
+                            } else {
+                                blacklist[n as usize] = true;
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>();
+
+                    neighbors.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                    for (neighbor, distance) in neighbors {
+                        let neighbor = neighbor as usize;
+                        if !visited[neighbor] && !blacklist[neighbor] && count < ef {
+                            top_k.push((neighbor as u64, distance));
+
+                            stack.push(neighbor as u64);
+                            visited[neighbor] = true;
+                            count += 1;
                         }
 
-                        let e_n = cache.get(n as u32).unwrap();
-                        let mut filter_pass = true;
-                        for filter in query.filters.iter() {
-                            for meta in e_n.source_file.meta.iter() {
-                                filter_pass &= filter.compare(meta);
+                        if top_k.len() > k {
+                            top_k.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                            while top_k.len() > k {
+                                top_k.pop();
                             }
                         }
 
-                        if !visited[n as usize] && filter_pass {
-                            Some((n, 1.0 - dot(&query.embedding, &e_n)))
-                        } else {
-                            blacklist[n as usize] = true;
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>();
-
-                neighbors.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-                for (neighbor, distance) in neighbors {
-                    let neighbor = neighbor as usize;
-                    if !visited[neighbor] && !blacklist[neighbor] && count < ef {
-                        top_k.push((neighbor as u64, distance));
-
-                        stack.push(neighbor as u64);
-                        visited[neighbor] = true;
-                        count += 1;
-                    }
-
-                    if top_k.len() > k {
-                        top_k.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-                        while top_k.len() > k {
-                            top_k.pop();
+                        if count >= ef {
+                            return top_k
+                                .into_iter()
+                                .map(|(node, distance)| (cache.get(node as u32).unwrap(), distance))
+                                .collect::<Vec<_>>();
                         }
                     }
-
-                    if count >= ef {
-                        return top_k
-                            .into_iter()
-                            .map(|(node, distance)| (cache.get(node as u32).unwrap(), distance))
-                            .collect::<Vec<_>>();
-                    }
+                } else {
+                    continue;
                 }
             }
 
             top_k.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-            current = top_k.first().unwrap().0;
+            current = match top_k.first() {
+                Some(k) => k.0,
+                None => continue,
+            };
         }
 
         top_k.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         top_k
             .into_iter()
-            .map(|(node, distance)| (cache.get(node as u32).unwrap(), distance))
+            .map(|(node, distance)| (cache.get(node as u32 + 1).unwrap(), distance))
             .collect::<Vec<_>>()
     }
 
@@ -431,6 +471,8 @@ impl HNSW {
         for layer in self.layers.iter_mut() {
             layer.retain(|k, _| *k != target_id);
         }
+
+        self.size -= 1;
     }
 
     pub fn serialize(&self, filepath: &String) -> Result<(), std::io::Error> {

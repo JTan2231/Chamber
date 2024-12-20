@@ -370,11 +370,11 @@ fn connect_https(host: &str, port: u16) -> native_tls::TlsStream<std::net::TcpSt
 
 pub fn prompt_stream(
     chat_history: &Vec<Message>,
+    system_prompt: String,
     tx: std::sync::mpsc::Sender<String>,
 ) -> Result<(), std::io::Error> {
     let last_message = chat_history.last().unwrap();
     let api = last_message.api.clone();
-    let system_prompt = last_message.system_prompt.clone();
 
     let params = match api {
         API::Anthropic(_) => {
