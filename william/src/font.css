@@ -88,9 +88,10 @@ li {
 
 .popup-content {
     position: absolute;
-    bottom: 100%;
+    top: 100%;
     width: fit-content;
     margin-bottom: 10px;
+    z-index: 1000;
 
     background-color: white;
     padding: 0.5rem;

@@ -44,6 +44,9 @@ interface WebSocketHookReturn {
   error: Error | null;
 }
 
+// A variety of types for communicating with the backend
+// I think this is really all they're here for
+
 const OpenAIModelSchema = z.enum([
   "gpt-4o",
   "gpt-4o-mini",
@@ -194,6 +197,7 @@ interface TitleCaseOptions {
   customMinorWords?: string[];
 }
 
+// We could probably just prompt GPT better instead of using this
 function formatTitle(input: string, options: TitleCaseOptions = {}): string {
   if (!input) return '';
 
@@ -252,6 +256,8 @@ function conversationDefault(): Conversation {
   return ConversationSchema.parse({ id: null, name: crypto.randomUUID(), messages: [] });
 }
 
+// Quick and dirty hook for connecting to the backend
+// TODO: this will probably need expanded in the future to accommodate better error handling and the like
 const useWebSocket = ({
   url,
   retryInterval = 5000,
@@ -275,6 +281,8 @@ const useWebSocket = ({
         setRetryCount(0);
       };
 
+      // This is a sorry excuse for a REST-ish API
+      // I feel like there's a much better way of structuring the "endpoints" supported by both the front + back ends
       ws.onmessage = (event) => {
         try {
           const response = JSON.parse(event.data) satisfies ArrakisResponse;
@@ -310,6 +318,7 @@ const useWebSocket = ({
         }
       };
 
+      // TODO: this needs to be expanded
       ws.onerror = (event) => {
         setError(new Error('WebSocket error occurred'));
       };
@@ -332,6 +341,8 @@ const useWebSocket = ({
     }
   }, [url, retryCount, maxRetries, retryInterval]);
 
+  // Generic message sending function for the backend
+  // Ideally, _all_ messages going to the backend will be an ArrakisRequest
   const sendMessage = useCallback((message: ArrakisRequest) => {
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(typeof message === 'string' ? message : JSON.stringify(message));
@@ -362,6 +373,7 @@ const useWebSocket = ({
   };
 };
 
+// TODO: do something with this and scrap it please
 interface Sizing {
   value: number;
   unit: string;
@@ -374,6 +386,10 @@ function createSizing(value: number, unit: string): Sizing {
   };
 }
 
+// Basic converter of HTML strings to proprerly structured react elements
+// needed for parsing/unescaping/markdown-ing each message's contents
+//
+// TODO: though I'm sure there's a better way 
 type ReactElementOrText = React.ReactElement | string | null;
 function htmlToReactElements(htmlString: string) {
   const parser = new DOMParser();
@@ -423,7 +439,8 @@ const escapeFromHTML: Record<string, string> = Object.entries(escapeToHTML).redu
   return acc;
 }, {} as Record<string, string>);
 
-const PopupButton = (props: { model: string, modelCallback: Function }) => {
+// Generic dropdown for setting the current LLM backend, which updates the main app state through props.modelCallback
+const ModelDropdown = (props: { model: string, modelCallback: Function }) => {
   const [isOpen, setIsOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLDivElement | null>(null);
@@ -452,11 +469,15 @@ const PopupButton = (props: { model: string, modelCallback: Function }) => {
       onClick={() => setIsOpen(!isOpen)}
       className="buttonHoverLight"
       style={{
-        padding: '0.5rem',
         userSelect: 'none',
-        cursor: 'pointer',
-        border: '1px solid #EDEDED',
-        borderRadius: '0.25rem',
+        cursor: 'default',
+        alignSelf: 'center',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        textAlign: 'center',
+        padding: '0 0.25rem',
+        borderRadius: '0.5rem',
       }}>
       {props.model}
 
@@ -864,334 +885,335 @@ function MainPage() {
 
   const menuButtonStyle: React.CSSProperties = {
     userSelect: 'none',
-    cursor: 'pointer',
-    width: '100%',
-    height: '2rem',
+    cursor: 'default',
     alignSelf: 'center',
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
     textAlign: 'center',
-    margin: '0.25rem 0',
+    padding: '0 0.25rem',
     borderRadius: '0.5rem',
   };
 
   // Main window component
   return (
-    <div style={{
+    <div ref={messagesRef} onMouseEnter={() => setMouseInChat(true)} onMouseLeave={() => setMouseInChat(false)} style={{
       height: '100vh',
       display: 'flex',
-      flexDirection: 'row',
+      flexDirection: 'column',
+      width: '100vw',
+      overflowY: 'auto',
+      backgroundColor: '#F9F8F7',
     }}>
-      {
-        /*
-         * TODO: Deprecated mouseInChat nonsense
-         *
-         * This is the main chat component
-         */
-      }
-      <div ref={messagesRef} onMouseEnter={() => setMouseInChat(true)} onMouseLeave={() => setMouseInChat(false)} style={{
-        height: 'calc(100vh - 1rem)',
+      { /* Header */ }
+      <div style={{
+        position: 'fixed',
+        height: '2.5rem',
+        width: '100%',
         display: 'flex',
-        flexDirection: 'column',
-        width: 'calc(100% - 1rem)',
-        overflowY: 'auto',
-        border: '1px solid #E0DED9',
-        boxShadow: '0 0 8px rgba(28, 25, 23, 0.1)',
-        margin: '0.5rem',
-        backgroundColor: '#F9F8F7',
-        borderRadius: '0.5rem',
+        gap: '1.5rem',
+        backgroundColor: '#FFFFFF',
+        paddingLeft: '0.5rem',
+        borderBottom: '1px solid #CFCFCF',
+        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.12)',
+        zIndex: 1,
       }}>
-        {
-          /*
-           * This is the main wrapper around the chat input that places it in the center of the screen
-           * TODO: revisit how much of this is actually needed
-           */
-        }
-        <div
-          style={{
+        { /* Element to determine whether the frontend has an established websocket connection with the backend */ }
+        <div style={{
+          backgroundColor: connectionStatus === 'disconnected' ? 'red' : '#56F55E',
+          userSelect: 'none',
+          width: '24px',
+          height: '24px',
+          borderRadius: '0.5rem',
+          alignSelf: 'center',
+        }} />
+
+        { /* Create a new conversation and clear the current conversation history */ }
+        <div className="buttonHoverLight" onClick={() => {
+          setSelectedModal(null);
+          setLoadedConversation(conversationDefault());
+          setDisplayedTitle(titleDefault());
+        }} style={menuButtonStyle}>New</div>
+
+        { /* View + give the option to load saved conversations */ }
+        <div className="buttonHoverLight" onClick={() => setSelectedModal(selectedModal !== 'search' ? 'search' : null)} style={menuButtonStyle}>History</div>
+
+        <ModelDropdown model={model.model} modelCallback={setModel} />
+
+        { /* Display element for the selected modal, if any */ }
+        <div style={{
+          display: selectedModal ? '' : 'none',
+        }}>
+          <div style={{
             position: 'fixed',
-            left: 'calc(50% - 0.375rem)',
-            transform: 'translateX(-50%)',
-            bottom: '1rem',
-            width: '35vw',
-            minHeight: '1rem',
-            padding: inputSizings.padding.toString(),
-            backgroundColor: '#EFECEA',
-            borderRadius: '0.5rem',
-            fontSize: '16px',
-            overflow: 'hidden',
-            display: 'flex',
-          }}
-        >
+            left: 0,
+            top: 0,
+            height: '100vh',
+            width: '100vw',
+            backgroundColor: '#00000010',
+          }} onClick={() => setSelectedModal('')} />
           <div style={{
-            maxHeight: '25vh',
-            overflow: 'auto',
-            height: '100%',
-            width: '100%',
+            position: 'fixed',
+            backgroundColor: '#F9F8F7',
+            width: '55vw',
+            height: '45vh',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            overflow: 'hidden auto',
+            borderRadius: '1rem',
           }}>
-            <div
-              contentEditable={true}
-              id="chatInput"
-              onKeyDown={sendPrompt}
-              style={{
-                height: '100%',
-                width: '100%',
-                border: 0,
-                outline: 0,
-                resize: 'none',
-                alignSelf: 'center',
-                backgroundColor: 'transparent',
-              }}
-            />
+            {getModal()}
           </div>
-        </div>
-        <div style={{
-          position: 'relative',
-          width: '40vw',
-          margin: '0 auto',
-          flex: 1,
-          paddingBottom: `calc(${inputSizings.height.toString()} + 10vh)`
-        }}>
-          {loadedConversation.messages.map((m) => {
-            // Lot of preprocessing here to properly render the messages into markdown into react components
-
-            const toPattern = new RegExp(
-              Object.keys(escapeToHTML)
-                .map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-                .join('|'),
-              'g'
-            );
-
-            // Escaping the incoming messages to... TODO: what?
-            let content = m.content.replace(toPattern, function (match) {
-              return escapeToHTML[match];
-            });
-
-            // Markdown to HTML conversion
-            content = addMathDelimiters(content);
-            content = md.render(content) as string;
-
-            const reactElements = htmlToReactElements(content);
-
-            // Processing each react element to clean the contained text
-            // and fix up the CSS styles to be camelCase
-            function modifyElements(element: any): ReactElementOrText {
-              if (typeof element === 'string') {
-                let c = element as string;
-                const fromPattern = new RegExp(
-                  Object.keys(escapeFromHTML)
-                    .map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-                    .join('|'),
-                  'g'
-                );
-
-                return c.replace(fromPattern, function (match) {
-                  return escapeFromHTML[match];
-                })
-              }
-
-              const props = element.props as React.PropsWithChildren<{ [key: string]: any }>;
-
-              const input = props.style;
-
-              if (input) {
-                if (typeof input !== "string") return null;
-
-                const styleObject: { [key: string]: any } = {};
-                const styleEntries = input.split(";").filter(Boolean);
-
-                for (const entry of styleEntries) {
-                  const [property, value] = entry.split(":").map((s) => s.trim());
-                  if (property && value) {
-                    // Convert CSS property to camelCase for React style
-                    const camelCaseProperty = property.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-                    styleObject[camelCaseProperty] = value;
-                  }
-                }
-
-                return React.cloneElement(element, {
-                  style: styleObject,
-                  children: React.Children.map(props.children, (child) =>
-                    React.isValidElement(child) ? modifyElements(child) : child
-                  ),
-                });
-              }
-
-              if (props.children) {
-                return React.createElement(
-                  element.type,
-                  element.props,
-                  React.Children.map(props.children, modifyElements)
-                );
-              }
-
-              return element;
-            };
-
-            const unescapedElements = reactElements.map(modifyElements);
-
-            const isUser = m.message_type === 'User';
-
-            // Actually build the component which holds the chat history + all the contained messages
-            return (
-              <>
-                <div style={{
-                  color: '#ABA7A2',
-                  fontSize: '0.7rem',
-                  marginTop: '1rem',
-                  marginLeft: '0.5rem',
-                  userSelect: 'none',
-                  marginBottom: isUser ? '' : '-0.25rem'
-                }}>{isUser ? 'You' : model.model}</div>
-                <div style={{
-                  backgroundColor: isUser ? '#E2E0DD' : '',
-                  borderRadius: '0.5rem',
-                  margin: '0 0.25rem 0.25rem 0.25rem 0.25rem',
-                  padding: '0.01rem 0',
-                  width: isUser ? 'fit-content' : '',
-                  position: 'relative'
-                }}>
-                  {isUser ? '' : (
-                    <p className="messageOptions" style={{
-                      position: 'absolute',
-                      transform: 'translateX(calc(-100% - 1rem))',
-                      userSelect: 'none',
-                      cursor: 'pointer',
-                      display: 'flex',
-                    }}>
-                      <div style={{
-                        width: 'fit-content',
-                        overflow: 'hidden',
-                      }}>
-                        <div className="messageOptionsRow">
-                          <div style={{
-                            padding: '0 0.5rem',
-                          }} onClick={() => {
-                            // Regeneration option for a given message
-                            // This forks the existing conversation and saves the new conversation as a new entry in the listing
-                            // All conversation up to the regenerated message is kept, all conversation history after is left behind in the old conversation
-
-                            sendMessage(ArrakisRequestSchema.parse({
-                              method: 'Fork',
-                              payload: ForkRequestSchema.parse({
-                                conversationId: loadedConversation.id,
-                                sequence: m.sequence
-                              })
-                            }));
-
-                            const conversation = {
-                              ...loadedConversation,
-                              messages: loadedConversation.messages.slice(0, m.sequence + 1),
-                            };
-
-                            let last = conversation.messages[conversation.messages.length - 1];
-
-                            // Cleaning message metadata for the new conversation entry
-                            last.content = '';
-                            last.id = null;
-                            last.message_type = 'Assistant';
-                            last.system_prompt = systemPrompt;
-                            last.api = model;
-
-                            conversation.messages[conversation.messages.length - 1] = last;
-
-                            setLoadedConversation(conversation);
-                          }}>Regenerate</div>
-                        </div>
-                      </div>
-                      <div>•</div>
-                    </p>
-                  )}
-
-                  {
-                    /* The actual message elements */
-                    unescapedElements
-                  }
-                </div>
-              </>
-            );
-          })}
-        </div>
-
-        { /* Current conversation title and general interaction options */ }
-        <div style={{
-          position: 'absolute',
-          width: '5vw',
-          display: 'flex',
-          flexDirection: 'column',
-          backgroundColor: 'transparent',
-          margin: '0.5rem 0 0.5rem 0',
-        }}>
-
-          { /* Current loaded conversation title */ }
-          <div style={{
-            fontWeight: 'bold',
-            height: '1rem',
-            textWrap: 'nowrap',
-            margin: '0.25rem 0 1rem 0.5rem',
-          }}>{formatTitle(displayedTitle.title)}</div>
-
-          { /* Element to determine whether the frontend has an established websocket connection with the backend */ }
-          <div style={{
-            backgroundColor: connectionStatus === 'disconnected' ? 'red' : '#56F55E',
-            userSelect: 'none',
-            width: '24px',
-            height: '24px',
-            margin: '0.5rem',
-            borderRadius: '0.5rem',
-            alignSelf: 'center',
-          }} />
-
-          { /* Create a new conversation and clear the current conversation history */ }
-          <div className="buttonHoverLight" onClick={() => {
-            setSelectedModal(null);
-            setLoadedConversation(conversationDefault());
-            setDisplayedTitle(titleDefault());
-          }} style={menuButtonStyle}>New</div>
-
-          { /* View + give the option to load saved conversations */ }
-          <div className="buttonHoverLight" onClick={() => setSelectedModal(selectedModal !== 'search' ? 'search' : null)} style={menuButtonStyle}>History</div>
-
-          { /* Display element for the selected modal, if any */ }
-          <div style={{
-            display: selectedModal ? '' : 'none',
-          }}>
-            <div style={{
-              position: 'fixed',
-              left: 0,
-              top: 0,
-              height: '100vh',
-              width: '100vw',
-              backgroundColor: '#00000010',
-            }} onClick={() => setSelectedModal('')} />
-            <div style={{
-              position: 'fixed',
-              backgroundColor: '#F9F8F7',
-              width: '55vw',
-              height: '45vh',
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              overflow: 'hidden',
-              borderRadius: '1rem',
-            }}>
-              {getModal()}
-            </div>
-          </div>
-        </div>
-
-        { /* Pop-up menu for selecting the LLM backend to use */ }
-        <div style={{
-          position: 'sticky',
-          marginLeft: '0.5rem',
-          bottom: '0.5rem',
-          width: 'fit-content',
-        }}>
-          <PopupButton model={model.model} modelCallback={setModel} />
         </div>
       </div>
-    </div >
+
+      {
+        /*
+         * This is the main wrapper around the chat input that places it in the center of the screen
+         * TODO: revisit how much of this is actually needed
+         */
+      }
+      <div
+        style={{
+          position: 'fixed',
+          left: 'calc(50%)',
+          transform: 'translateX(-50%)',
+          bottom: '1rem',
+          // header height + border size
+          width: '45vw',
+          minHeight: '1rem',
+          padding: inputSizings.padding.toString(),
+          backgroundColor: '#EFECEA',
+          borderRadius: '0.5rem',
+          fontSize: '16px',
+          overflow: 'hidden',
+          display: 'flex',
+        }}
+      >
+        <div style={{
+          maxHeight: '25vh',
+          overflow: 'auto',
+          height: '100%',
+          width: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+        }}>
+          <div
+            contentEditable={true}
+            id="chatInput"
+            onKeyDown={sendPrompt}
+            style={{
+              height: '100%',
+              width: '100%',
+              border: 0,
+              outline: 0,
+              resize: 'none',
+              alignSelf: 'center',
+              backgroundColor: 'transparent',
+            }}
+          />
+          <div style={{
+            display: 'flex',
+          }}>
+
+          </div>
+        </div>
+      </div>
+      <div style={{
+        position: 'relative',
+        width: '40vw',
+        margin: '0 auto',
+        top: 'calc(2.5rem + 1px)',
+        flex: 1,
+        marginBottom: `calc(${inputSizings.height.toString()} + 10vh)`
+      }}>
+        {loadedConversation.messages.map((m) => {
+          // Lot of preprocessing here to properly render the messages into markdown into react components
+          // particularly, HTML characters need properly escaped in order to be processed correctly
+          // CSS styles also need to be changed--the generated HTML from markdown-it isn't conducive to React inline styling
+          // i.e., it's native to HTML rather than camelCase/JS-ified
+
+          const toPattern = new RegExp(
+            Object.keys(escapeToHTML)
+              .map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+              .join('|'),
+            'g'
+          );
+
+          // Escaping the incoming messages to be HTML friendly
+          // Particularly, if a message contains HTML it can message with the markdown-parsed output
+          // The escaping occurs here to keep from disambiguiation issues later in the pipeline
+          let content = m.content.replace(toPattern, function (match) {
+            return escapeToHTML[match];
+          });
+
+          // Markdown to HTML conversion
+          content = addMathDelimiters(content);
+          content = md.render(content) as string;
+
+          const reactElements = htmlToReactElements(content);
+
+          // Processing each react element to clean the contained text
+          // and fix up the CSS styles to be camelCase
+          function modifyElements(element: any): ReactElementOrText {
+            if (typeof element === 'string') {
+              let c = element as string;
+              const fromPattern = new RegExp(
+                Object.keys(escapeFromHTML)
+                  .map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+                  .join('|'),
+                'g'
+              );
+
+              return c.replace(fromPattern, function (match) {
+                return escapeFromHTML[match];
+              })
+            }
+
+            const props = element.props as React.PropsWithChildren<{ [key: string]: any }>;
+
+            const input = props.style;
+
+            if (input) {
+              if (typeof input !== "string") return null;
+
+              const styleObject: { [key: string]: any } = {};
+              const styleEntries = input.split(";").filter(Boolean);
+
+              for (const entry of styleEntries) {
+                const [property, value] = entry.split(":").map((s) => s.trim());
+                if (property && value) {
+                  // Convert CSS property to camelCase for React style
+                  const camelCaseProperty = property.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+                  styleObject[camelCaseProperty] = value;
+                }
+              }
+
+              return React.cloneElement(element, {
+                style: styleObject,
+                children: React.Children.map(props.children, (child) =>
+                  React.isValidElement(child) ? modifyElements(child) : child
+                ),
+              });
+            }
+
+            if (props.children) {
+              return React.createElement(
+                element.type,
+                element.props,
+                React.Children.map(props.children, modifyElements)
+              );
+            }
+
+            return element;
+          };
+
+          const unescapedElements = reactElements.map(modifyElements);
+
+          const isUser = m.message_type === 'User';
+
+          // Actually build the component which holds the chat history + all the contained messages
+          return (
+            <>
+              <div style={{
+                color: '#ABA7A2',
+                fontSize: '0.7rem',
+                marginTop: '1rem',
+                marginLeft: '0.5rem',
+                userSelect: 'none',
+                marginBottom: isUser ? '' : '-0.25rem'
+              }}>{isUser ? 'You' : model.model}</div>
+              <div style={{
+                backgroundColor: isUser ? '#E2E0DD' : '',
+                borderRadius: '0.5rem',
+                margin: '0 0.25rem 0.25rem 0.25rem 0.25rem',
+                padding: '0.01rem 0',
+                width: isUser ? 'fit-content' : '',
+                position: 'relative'
+              }}>
+                {isUser ? '' : (
+                  <p className="messageOptions" style={{
+                    position: 'absolute',
+                    transform: 'translateX(calc(-100% - 1rem))',
+                    userSelect: 'none',
+                    cursor: 'pointer',
+                    display: 'flex',
+                  }}>
+                    <div style={{
+                      width: 'fit-content',
+                      overflow: 'hidden',
+                    }}>
+                      <div className="messageOptionsRow">
+                        <div style={{
+                          padding: '0 0.5rem',
+                        }} onClick={() => {
+                          // Regeneration option for a given message
+                          // This forks the existing conversation and saves the new conversation as a new entry in the listing
+                          // All conversation up to the regenerated message is kept, all conversation history after is left behind in the old conversation
+
+                          sendMessage(ArrakisRequestSchema.parse({
+                            method: 'Fork',
+                            payload: ForkRequestSchema.parse({
+                              conversationId: loadedConversation.id,
+                              sequence: m.sequence
+                            })
+                          }));
+
+                          const conversation = {
+                            ...loadedConversation,
+                            messages: loadedConversation.messages.slice(0, m.sequence + 1),
+                          };
+
+                          let last = conversation.messages[conversation.messages.length - 1];
+
+                          // Cleaning message metadata for the new conversation entry
+                          last.content = '';
+                          last.id = null;
+                          last.message_type = 'Assistant';
+                          last.system_prompt = systemPrompt;
+                          last.api = model;
+
+                          conversation.messages[conversation.messages.length - 1] = last;
+
+                          setLoadedConversation(conversation);
+                        }}>Regenerate</div>
+                      </div>
+                    </div>
+                    <div>•</div>
+                  </p>
+                )}
+
+                {
+                  /* The actual message elements */
+                  unescapedElements
+                }
+              </div>
+            </>
+          );
+        })}
+      </div>
+
+      { /* Current conversation title and general interaction options */ }
+      <div style={{
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        backgroundColor: 'transparent',
+        margin: '0.5rem 0.5rem 0',
+      }}>
+
+        { /* Current loaded conversation title */ }
+        <div style={{
+          fontWeight: 'bold',
+          height: '1rem',
+          textWrap: 'nowrap',
+          margin: '0.75rem 0 1rem 0',
+        }}>{formatTitle(displayedTitle.title)}</div>
+      </div>
+    </div>
   );
 }
 
