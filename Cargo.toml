@@ -7,5 +7,5 @@ members = [
     "alfred",
     "metatron",
     "common",
-    "william",
+    "william/src-tauri",
 ]

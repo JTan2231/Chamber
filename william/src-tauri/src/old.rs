@@ -30,7 +30,7 @@ fn get_embeddings_dir() -> std::path::PathBuf {
 // TODO: a lot of this setup code needs abstracted to a common module
 fn setup() {
     // TODO: better path config handling
-    chamber_common::Workspace::new("/home/joey/.local/william");
+    chamber_common::Workspace::new("/Users/joey/.local/william");
 
     create_if_nonexistent(&get_local_dir());
     create_if_nonexistent(&get_embeddings_dir());
@@ -506,6 +506,7 @@ fn get_conversation(conversation_id: i64, db: &rusqlite::Connection) -> Conversa
 fn main() {
     setup();
 
+    // TODO: actual handling for getting this tiktoken file
     let tokenizer_ = std::sync::Arc::new(std::sync::Mutex::new(
         tiktoken::Tokenizer::new(&get_local_dir().join("o200k_base.tiktoken")).unwrap(),
     ));
