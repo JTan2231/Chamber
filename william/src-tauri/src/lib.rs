@@ -10,6 +10,8 @@ mod network;
 mod tiktoken;
 mod types;
 
+// Check if a directory exists, and create if needed
+// Mainly just used in initialization
 fn create_if_nonexistent(path: &std::path::PathBuf) {
     if !path.exists() {
         match std::fs::create_dir_all(&path) {
@@ -19,16 +21,14 @@ fn create_if_nonexistent(path: &std::path::PathBuf) {
     }
 }
 
-fn get_conversations_dir() -> std::path::PathBuf {
-    let local = get_local_dir();
-    local.join("conversations")
-}
-
 fn get_embeddings_dir() -> std::path::PathBuf {
     get_local_dir().join("messages")
 }
 
 // TODO: a lot of this setup code needs abstracted to a common module
+//
+// Sets up necessary config/local directories and touches required files to keep things from
+// breaking/crashing on start up
 fn setup() {
     // TODO: better path config handling
     chamber_common::Workspace::new("/Users/joey/.local/william");
@@ -38,6 +38,7 @@ fn setup() {
     create_if_nonexistent(&get_config_dir());
     create_if_nonexistent(&get_root_dir().join("logs"));
 
+    // TODO: proper logging, obviously
     chamber_common::Logger::init(
         get_root_dir()
             .join("logs")
@@ -69,6 +70,8 @@ fn is_valid_guid(guid: &str) -> bool {
     hex_only.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+// DB initialization statement
+// Creates the necessary tables and whatnot and is executed at start up each time
 const DB_SETUP_STATEMENTS: &str = r#"
 CREATE TABLE IF NOT EXISTS message_types (
     id INTEGER PRIMARY KEY,
@@ -195,6 +198,9 @@ CREATE TABLE IF NOT EXISTS forks (
 //
 // TODO: there should probably be some decoupling
 //       between Dewey and the SQLite db
+//
+// Embeds a message if it's not already embedded through Dewey
+// TODO: What's the case in which it's already embedded?
 fn add_message_embedding(
     dewey: &mut Dewey,
     db: &rusqlite::Connection,
@@ -226,6 +232,9 @@ fn add_message_embedding(
     Ok(())
 }
 
+// Basic prompt builder. Uses embedding memory and XML to structure prompts.
+// TODO: This could probably be abstracted out to a more general prompt builder, but I can't see
+//       the metastructure at the moment
 fn build_system_prompt(
     conversation_len: usize,
     filepath: &str,
@@ -265,6 +274,10 @@ fn build_system_prompt(
     prompt
 }
 
+// TODO: this needs to be accommodated for the high context windows
+//
+// Function to keep the conversation within context window limits. Returns the correct conversation
+// history to use for the prompt.
 fn cutoff_messages(
     messages: &Vec<Message>,
     tokenizer: &tiktoken::Tokenizer,
@@ -355,6 +368,8 @@ fn completion(
     // TODO: error handling
     add_message_embedding(dewey, db, last_user_message, &filepath).unwrap();
 
+    // Separate thread to communicate with the LLM
+    // Message deltas are streamed back through the channel
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
         match network::prompt_stream(
@@ -377,9 +392,12 @@ fn completion(
                     .id
                     .unwrap();
 
+                // Update the last message with the delta
+                // This is primarily for accurately storing things in the DB
                 let last = conversation.messages.last_mut().unwrap();
                 last.content.push_str(&message);
 
+                // Make sure conversation metadata is correctly set
                 let conversation_id = conversation.id.unwrap();
                 let response_id = last.id.unwrap();
                 let conversation_name = conversation.name.clone();
@@ -406,6 +424,8 @@ fn completion(
                     }
                 };
             }
+            // TODO: this feels disgusting. There has to be a better way of telling when the stream
+            //       has ended
             Err(e) => {
                 println!("Assuming stream completed... ({})", e);
 
@@ -423,6 +443,8 @@ fn completion(
                         continue;
                     }
                 };
+
+                // Backend storage duties--SQLite + embedding generation/storage
 
                 conversation.upsert(db).unwrap();
 
@@ -445,6 +467,7 @@ fn completion(
     }
 }
 
+// Fetch a whole conversation from SQLite with a given ID
 fn get_conversation(conversation_id: i64, db: &rusqlite::Connection) -> Conversation {
     let mut query = db
         .prepare(
@@ -512,7 +535,6 @@ fn get_conversation(conversation_id: i64, db: &rusqlite::Connection) -> Conversa
 }
 
 // TODO: there is zero error handling around here lol
-
 fn websocket_server() {
     setup();
 
@@ -526,6 +548,7 @@ fn websocket_server() {
             .expect("Failed to open database"),
     ));
 
+    // DB initialization
     db_.lock()
         .unwrap()
         .execute_batch(DB_SETUP_STATEMENTS)
@@ -571,7 +594,14 @@ fn websocket_server() {
                     }
                 };
 
+                // Not sure if there is a better way of delineating endpoints, but this is the best
+                // we have right now.
+                //
+                // Request types are judged by their payload structure--see `types.rs` for more
+                // info.
                 match request {
+                    // Triggers on a chat message submission, as well as a fork
+                    // (after backend processing)
                     ArrakisRequest::Completion { payload } => {
                         completion(
                             &mut websocket,
@@ -581,6 +611,7 @@ fn websocket_server() {
                             &mut dewey.lock().unwrap(),
                         );
                     }
+                    // TODO: Not sure how necessary this is
                     ArrakisRequest::Ping { payload: _ } => {
                         let response = serde_json::to_string(&ArrakisResponse {
                             payload: ResponsePayload::Ping(Ping {
@@ -599,6 +630,7 @@ fn websocket_server() {
                             }
                         };
                     }
+                    // Retrieve a list of saved conversation IDs
                     ArrakisRequest::ConversationList => {
                         let db = db.lock().unwrap();
                         let mut query = db.prepare("SELECT id, name from conversations").unwrap();
@@ -631,6 +663,7 @@ fn websocket_server() {
                             }
                         };
                     }
+                    // Fetch a conversation from its ID
                     ArrakisRequest::Load { payload } => {
                         let response = serde_json::to_string(&ArrakisResponse {
                             payload: ResponsePayload::Load(
@@ -649,6 +682,7 @@ fn websocket_server() {
                             }
                         };
                     }
+                    // Read or write to the saved system prompt, depending on the request
                     ArrakisRequest::SystemPrompt { payload } => {
                         let path = get_config_dir().join("system_prompt");
 
@@ -699,6 +733,11 @@ fn websocket_server() {
                     // get the current conversation,
                     // create the fork,
                     // carry on with the completion
+                    //
+                    // TODO: this needs cleaned up from a UI perspective. Regenerating messages
+                    //       when there's a communication failure quickly leads to a cluttering of the
+                    //       conversation history. They also need renamed based on the conversation
+                    //       redirection
                     ArrakisRequest::Fork { payload } => {
                         let db = db.lock().unwrap();
 
@@ -751,7 +790,7 @@ fn websocket_server() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .setup(|app| {
+        .setup(|_| {
             spawn(async move {
                 websocket_server();
             });
