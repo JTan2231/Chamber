@@ -960,7 +960,8 @@ function MainPage() {
 
         { /* Display element for the selected modal, if any */ }
         <div style={{
-          display: selectedModal ? '' : 'none',
+          pointerEvents: selectedModal ? 'auto' : 'none',
+          transition: 'all 0.3s',
         }}>
           <div style={{
             position: 'fixed',
@@ -968,9 +969,17 @@ function MainPage() {
             top: 0,
             height: '100vh',
             width: '100vw',
-            backgroundColor: '#00000010',
+            backgroundColor: 'rgba(236, 240, 255, 0.08)',
+            backdropFilter: selectedModal ? 'blur(2px)' : 'blur(0px)',
+            WebkitBackdropFilter: selectedModal ? 'blur(2px)' : 'blur(0px)',
+            transition: 'all 0.3s',
+            opacity: selectedModal ? 1 : 0,
           }} onClick={() => setSelectedModal(null)} />
           <div style={{
+            backdropFilter: selectedModal ? 'blur(2px)' : 'blur(0px)',
+            WebkitBackdropFilter: selectedModal ? 'blur(2px)' : 'blur(0px)',
+            transition: 'all 0.3s',
+            opacity: selectedModal ? 1 : 0,
             position: 'fixed',
             backgroundColor: '#F9F8F7',
             width: '55vw',
