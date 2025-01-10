@@ -249,7 +249,7 @@ function formatTitle(input: string, options: TitleCaseOptions = {}): string {
     return processHyphenatedWord(word, isFirst || isLast);
   });
 
-  return capitalizedWords.join(' ').replace('.json', '').replaceAll('_', ' ');
+  return capitalizedWords.join(' ');
 }
 
 function conversationDefault(): Conversation {
@@ -319,7 +319,7 @@ const useWebSocket = ({
       };
 
       // TODO: this needs to be expanded
-      ws.onerror = (event) => {
+      ws.onerror = (_) => {
         setError(new Error('WebSocket error occurred'));
       };
 
@@ -809,40 +809,42 @@ function MainPage() {
       );
     }
     // Show the system prompt textarea for reading/writing
-    else if (selectedModal === 'systemPrompt') {
-      return (
-        <div style={{
-          margin: '0.5rem',
-          display: 'flex',
-          flexDirection: 'column',
-        }}>
-          <textarea id="promptInput" placeholder="You are a helpful assistant." style={{
-            border: 0,
-            position: 'relative',
-            top: '1px',
-            outline: 0,
-            resize: 'none',
-            height: '45vh',
-            borderRadius: '0.5rem',
-            fontSize: '16px',
-            padding: '0.5rem',
-            marginBottom: '0.5rem',
-            textWrap: 'nowrap',
-          }} onBlur={() => {
-            // The system prompt is updated on the backend + stored to disk
-            // _only_ when the user unfocuses the textarea
-            // TODO: this needs changed--it's unintuitive
-            sendMessage({
-              method: 'SystemPrompt',
-              payload: {
-                write: true,
-                content: (document.getElementById('promptInput')! as HTMLTextAreaElement).value,
-              } satisfies SystemPromptRequest
-            } satisfies ArrakisRequest);
-          }}>{systemPrompt}</textarea>
-        </div>
-      );
-    }
+    // TODO: make this feature actually work\
+    //
+    // else if (selectedModal === 'systemPrompt') {
+    //   return (
+    //     <div style={{
+    //       margin: '0.5rem',
+    //       display: 'flex',
+    //       flexDirection: 'column',
+    //     }}>
+    //       <textarea id="promptInput" placeholder="You are a helpful assistant." style={{
+    //         border: 0,
+    //         position: 'relative',
+    //         top: '1px',
+    //         outline: 0,
+    //         resize: 'none',
+    //         height: '45vh',
+    //         borderRadius: '0.5rem',
+    //         fontSize: '16px',
+    //         padding: '0.5rem',
+    //         marginBottom: '0.5rem',
+    //         textWrap: 'nowrap',
+    //       }} onBlur={() => {
+    //         // The system prompt is updated on the backend + stored to disk
+    //         // _only_ when the user unfocuses the textarea
+    //         // TODO: this needs changed--it's unintuitive
+    //         sendMessage({
+    //           method: 'SystemPrompt',
+    //           payload: {
+    //             write: true,
+    //             content: (document.getElementById('promptInput')! as HTMLTextAreaElement).value,
+    //           } satisfies SystemPromptRequest
+    //         } satisfies ArrakisRequest);
+    //       }}>{systemPrompt}</textarea>
+    //     </div>
+    //   );
+    // }
   };
 
   // Function for parsing a string + adding Latex math delimiters for Markdown-It-Katex to properly render
@@ -967,7 +969,7 @@ function MainPage() {
             height: '100vh',
             width: '100vw',
             backgroundColor: '#00000010',
-          }} onClick={() => setSelectedModal('')} />
+          }} onClick={() => setSelectedModal(null)} />
           <div style={{
             position: 'fixed',
             backgroundColor: '#F9F8F7',
