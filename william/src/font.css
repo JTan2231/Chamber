@@ -37,15 +37,18 @@ pre {
     margin: 0;
     border-radius: 0.5rem;
     background-color: #F2F1EF;
+    overflow-x: auto;
 }
 
 code {
     padding: 0 !important;
     background-color: transparent !important;
+    font-size: 12px;
 }
 
 p {
     margin: 0.5rem;
+    font-size: 14px;
 }
 
 li {

@@ -2,10 +2,11 @@
 #![allow(clippy::borrow_deref_ref)]
 
 use std::collections::HashSet;
+use std::io::Write;
 use std::num::NonZeroU64;
 use std::thread;
 
-use chamber_common::{error, Logger};
+use chamber_common::{error, get_local_dir, Logger};
 
 use fancy_regex::Regex;
 use rustc_hash::FxHashMap as HashMap;
@@ -19,16 +20,54 @@ pub struct Tokenizer {
     ranks: HashMap<Vec<u8>, Rank>,
 }
 
+const TOKEN_MAPPING_URL: &str =
+    "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken";
+
 impl Tokenizer {
     // TODO: tokenizer file management
-    pub fn new(filepath: &std::path::PathBuf) -> Result<Self, std::io::Error> {
-        let contents = match std::fs::read_to_string(filepath) {
+    //
+    // NOTE: only supports the GPT-4o token mappings--this is probably a TODO
+    pub async fn new() -> Result<Self, std::io::Error> {
+        let token_mapping_filepath = &get_local_dir().join("o200k_base.tiktoken");
+
+        // Can't find the token mapping, try downloading it from OpenAI
+        if !token_mapping_filepath.exists() {
+            println!(
+                "Can't find the token mapping file, downloading from {}",
+                TOKEN_MAPPING_URL
+            );
+            let response = match reqwest::get(TOKEN_MAPPING_URL).await {
+                Ok(r) => r,
+                Err(e) => {
+                    // TODO: william should be able to run without a tokenizer
+                    panic!("error fetching tokenizer mapping: {}", e);
+                }
+            };
+
+            let bytes = response.bytes().await.unwrap();
+            println!("Token mapping downloaded");
+
+            let mut file = std::fs::File::create(token_mapping_filepath)?;
+            file.write_all(&bytes)?;
+
+            println!(
+                "Token mapping written to {}",
+                token_mapping_filepath.to_string_lossy().to_string()
+            );
+        }
+
+        let contents = match std::fs::read_to_string(token_mapping_filepath) {
             Ok(c) => c,
             Err(e) => {
                 error!("error reading tokenizer file: {}", e);
                 return Err(e);
             }
         };
+
+        println!(
+            "Read token mapping from {}",
+            token_mapping_filepath.to_string_lossy().to_string()
+        );
 
         Ok(Tokenizer {
             ranks: contents

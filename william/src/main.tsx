@@ -578,26 +578,44 @@ function MainPage() {
 
   useEffect(() => {
     const handleKeyPress = (event: any) => {
-      if (selectedModal) {
-        // TODO: deprecated condition
-        //       This is primarily to have chat input automatically focus when the user starts typing
-        //       regardless of where the user cursor/focus is
-        if (mouseInChat) {
-          (document.getElementById('chatInput') as HTMLInputElement).focus();
-          return;
-        } else {
-          // TODO: actually do something with search here
-          //       or drop this entirely
-          //       do something please
-          if (selectedModal !== 'search') {
-            (document.getElementById(selectedModal === 'search' ? 'searchInput' : (selectedModal === 'systemPrompt' ? 'promptInput' : '')) as HTMLInputElement).focus();
-            return;
-          }
-        }
-      }
+      // List of keys that shouldn't trigger input focus
+      const systemKeys = [
+        8,   // Backspace
+        9,   // Tab
+        18,  // Alt
+        20,  // Caps Lock
+        27,  // Escape
+        33,  // Page Up
+        34,  // Page Down
+        35,  // End
+        36,  // Home
+        37,  // Left Arrow
+        38,  // Up Arrow
+        39,  // Right Arrow
+        40,  // Down Arrow
+        45,  // Insert
+        46,  // Delete
+        112, // F1
+        113, // F2
+        114, // F3
+        115, // F4
+        116, // F5
+        117, // F6
+        118, // F7
+        119, // F8
+        120, // F9
+        121, // F10
+        122, // F11
+        123, // F12
+      ];
 
-      // We don't want to do anything if just control is pressed
-      if (event.ctrlKey && event.key !== 'v') {
+      // Don't trigger on system keys or modifier combinations
+      if (
+        systemKeys.includes(event.keyCode) ||
+        (event.ctrlKey && (event.key != 'v' || event.key == 'c')) ||  // copy + paste
+        (event.metaKey && (event.key != 'v' || event.key == 'c')) ||  // copy + paste
+        event.altKey
+      ) {
         return;
       }
 
@@ -772,9 +790,7 @@ function MainPage() {
           margin: '0.5rem',
           display: 'flex',
           flexDirection: 'column',
-          maxHeight: 'calc(100vh - 1rem)',
-          overflowY: 'auto',
-          overflowX: 'hidden',
+          overflow: 'hidden',
         }}>
           {conversations.map(c => {
             return (
@@ -920,7 +936,7 @@ function MainPage() {
       }}>
         { /* Element to determine whether the frontend has an established websocket connection with the backend */ }
         <div style={{
-          backgroundColor: connectionStatus === 'disconnected' ? 'red' : '#56F55E',
+          backgroundColor: connectionStatus === 'disconnected' ? '#F44336' : '#4CAF50',
           userSelect: 'none',
           width: '24px',
           height: '24px',
@@ -980,15 +996,18 @@ function MainPage() {
           left: 'calc(50%)',
           transform: 'translateX(-50%)',
           bottom: '1rem',
-          // header height + border size
-          width: '45vw',
+          // -2rem for margins + padding on the sides
+          width: 'calc(100% - 3rem)',
+          // 45% of 1920
+          maxWidth: '864px',
           minHeight: '1rem',
           padding: inputSizings.padding.toString(),
           backgroundColor: '#EFECEA',
           borderRadius: '0.5rem',
-          fontSize: '16px',
+          fontSize: '14px',
           overflow: 'hidden',
           display: 'flex',
+          zIndex: 3,
         }}
       >
         <div style={{
@@ -1130,7 +1149,8 @@ function MainPage() {
                 margin: '0 0.25rem 0.25rem 0.25rem 0.25rem',
                 padding: '0.01rem 0',
                 width: isUser ? 'fit-content' : '',
-                position: 'relative'
+                position: 'relative',
+                fontSize: '14px',
               }}>
                 {isUser ? '' : (
                   <p className="messageOptions" style={{
@@ -1192,26 +1212,6 @@ function MainPage() {
             </>
           );
         })}
-      </div>
-
-      { /* Current conversation title and general interaction options */ }
-      <div style={{
-        position: 'fixed',
-        bottom: 0,
-        left: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        backgroundColor: 'transparent',
-        margin: '0.5rem 0.5rem 0',
-      }}>
-
-        { /* Current loaded conversation title */ }
-        <div style={{
-          fontWeight: 'bold',
-          height: '1rem',
-          textWrap: 'nowrap',
-          margin: '0.75rem 0 1rem 0',
-        }}>{formatTitle(displayedTitle.title)}</div>
       </div>
     </div>
   );

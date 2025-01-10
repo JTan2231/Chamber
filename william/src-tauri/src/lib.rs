@@ -25,13 +25,34 @@ fn get_embeddings_dir() -> std::path::PathBuf {
     get_local_dir().join("messages")
 }
 
+fn get_home() -> Option<String> {
+    if cfg!(target_os = "windows") {
+        // TODO: windows
+        None
+    } else {
+        match std::env::var("HOME") {
+            Ok(path) => Some(path),
+            Err(_) => None,
+        }
+    }
+}
+
 // TODO: a lot of this setup code needs abstracted to a common module
 //
 // Sets up necessary config/local directories and touches required files to keep things from
 // breaking/crashing on start up
 fn setup() {
     // TODO: better path config handling
-    chamber_common::Workspace::new("/Users/joey/.local/william");
+    let home_dir = match get_home() {
+        Some(d) => d,
+        None => {
+            panic!("error: $HOME not set");
+        }
+    };
+
+    println!("home: {}", home_dir);
+
+    chamber_common::Workspace::new(&format!("{}/.local/william", home_dir));
 
     create_if_nonexistent(&get_local_dir());
     create_if_nonexistent(&get_embeddings_dir());
@@ -535,18 +556,27 @@ fn get_conversation(conversation_id: i64, db: &rusqlite::Connection) -> Conversa
 }
 
 // TODO: there is zero error handling around here lol
-fn websocket_server() {
+async fn websocket_server() {
     setup();
+    println!("Workspace initialized");
 
     // TODO: actual handling for getting this tiktoken file
+    //
+    // Tokenizer using the GPT-4o token mapping from OpenAI
     let tokenizer_ = std::sync::Arc::new(std::sync::Mutex::new(
-        tiktoken::Tokenizer::new(&get_local_dir().join("o200k_base.tiktoken")).unwrap(),
+        tiktoken::Tokenizer::new().await.unwrap(),
     ));
 
+    println!("Tokenizer initialized");
+
+    // The SQLite database is used to store conversations/messages + the like
+    // Probably want a more detailed description here
     let db_ = std::sync::Arc::new(std::sync::Mutex::new(
         rusqlite::Connection::open(get_local_dir().join("william.sqlite"))
             .expect("Failed to open database"),
     ));
+
+    println!("SQLite connection established");
 
     // DB initialization
     db_.lock()
@@ -554,11 +584,17 @@ fn websocket_server() {
         .execute_batch(DB_SETUP_STATEMENTS)
         .expect("Failed to initialize database");
 
+    println!("SQLite database initialized");
+
+    // Embeddings are retrieved from the OpenAI API and stored locally using Dewey as the index
     let dewey_ = std::sync::Arc::new(std::sync::Mutex::new(dewey_lib::Dewey::new().unwrap()));
+
+    println!("Dewey initialized");
 
     let server = std::net::TcpListener::bind("127.0.0.1:9001").unwrap();
     println!("WebSocket server listening on ws://127.0.0.1:9001");
 
+    // Websocket server loop
     for stream in server.incoming() {
         let tokenizer = std::sync::Arc::clone(&tokenizer_);
         let db = std::sync::Arc::clone(&db_);
@@ -593,6 +629,8 @@ fn websocket_server() {
                         continue;
                     }
                 };
+
+                println!("Request deserialized");
 
                 // Not sure if there is a better way of delineating endpoints, but this is the best
                 // we have right now.
@@ -792,7 +830,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|_| {
             spawn(async move {
-                websocket_server();
+                websocket_server().await;
             });
             Ok(())
         })
