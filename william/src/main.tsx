@@ -23,6 +23,9 @@ const md = new MarkdownIt({
   }
 }).use(markdownItKatex);
 
+// TODO: There's gotta be a better way of organizing things than a series of comments
+//       More meaning implicit in structure, please
+
 const root = ReactDOM.createRoot(
   document.getElementById('root') as HTMLElement
 );
@@ -567,11 +570,11 @@ const UserConfigModal = (props: {
   setModel: (model: API) => void,
 }) => {
   const [apiKeys, setApiKeys] = useState<ApiKeys>({
-    openai: '',
-    anthropic: '',
-    gemini: '',
-    groq: '',
-    grok: ''
+    openai: props.oldConfig ? props.oldConfig.apiKeys.openai : '',
+    anthropic: props.oldConfig ? props.oldConfig.apiKeys.anthropic : '',
+    gemini: props.oldConfig ? props.oldConfig.apiKeys.gemini : '',
+    groq: props.oldConfig ? props.oldConfig.apiKeys.groq : '',
+    grok: props.oldConfig ? props.oldConfig.apiKeys.grok : ''
   });
 
   const handleInputChange = (provider: string) => (e: any) => {
@@ -742,17 +745,21 @@ function MainPage() {
     }
   }, [connectionStatus]);
 
+  const needsOnboarding = (userConfig: UserConfig | null) => {
+    return (userConfig &&
+      !(userConfig.apiKeys.openai ||
+        userConfig.apiKeys.groq ||
+        userConfig.apiKeys.anthropic ||
+        userConfig.apiKeys.grok ||
+        userConfig.apiKeys.gemini));
+  };
+
   // Once we receive the user settings from the backend,
   // we do a quick check to see if they've set their API keys
   //
   // Not having them set results in an onboarding modal to do so
   useEffect(() => {
-    if (userConfig &&
-      !(userConfig.apiKeys.openai ||
-        userConfig.apiKeys.groq ||
-        userConfig.apiKeys.anthropic ||
-        userConfig.apiKeys.grok ||
-        userConfig.apiKeys.gemini)) {
+    if (needsOnboarding(userConfig)) {
       setSelectedModal('config');
     }
   }, [userConfig]);
@@ -1068,11 +1075,11 @@ function MainPage() {
     );
   };
 
-  const ConfigModal = () => {
+  const ConfigModal = (props: { closable: boolean }) => {
     if (selectedModal === 'config') {
       return (
         <>
-          {buildModalBackdrop(() => { }, true)}
+          {buildModalBackdrop(props.closable ? () => setSelectedModal(null) : () => { }, true)}
           <UserConfigModal
             oldConfig={userConfig}
             sendMessage={sendMessage}
@@ -1131,6 +1138,12 @@ function MainPage() {
           className="buttonHoverLight"
           onClick={() => setSelectedModal('search')}
           style={menuButtonStyle}>History</div>
+
+        { /* Updating user configuration (as of writing, just API keys */}
+        <div
+          className="buttonHoverLight"
+          onClick={() => setSelectedModal('config')}
+          style={menuButtonStyle}>Settings</div>
 
         { /* Dropdown for the user to change which LLM provider + backend they're using for the next message/fork */}
         <ModelDropdown userConfig={userConfig} model={model.model} modelCallback={setModel} />
@@ -1192,7 +1205,7 @@ function MainPage() {
          * I think this same component will be used for manual configuration triggers later on
          */
       }
-      <ConfigModal />
+      <ConfigModal closable={!needsOnboarding(userConfig)} />
 
       {
         /*
