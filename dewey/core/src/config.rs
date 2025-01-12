@@ -1,3 +1,5 @@
+use chamber_common::{lprint, Logger};
+
 #[cfg(debug_assertions)]
 const DEBUG: bool = true;
 #[cfg(not(debug_assertions))]
@@ -7,7 +9,10 @@ fn create_if_nonexistent(path: &std::path::PathBuf) {
     if !path.exists() {
         match std::fs::create_dir_all(&path) {
             Ok(_) => (),
-            Err(e) => panic!("Failed to create directory: {:?}, {}", path, e),
+            Err(e) => {
+                lprint!(error, "Failed to create directory: {:?}, {}", path, e);
+                panic!("Failed to create directory: {:?}, {}", path, e);
+            }
         };
     }
 }
@@ -16,7 +21,10 @@ fn touch_file(path: &std::path::PathBuf) {
     if !path.exists() {
         match std::fs::File::create(&path) {
             Ok(_) => (),
-            Err(e) => panic!("Failed to create file: {:?}, {}", path, e),
+            Err(e) => {
+                lprint!(error, "Failed to create file: {:?}, {}", path, e);
+                panic!("Failed to create file: {:?}, {}", path, e);
+            }
         };
     }
 }
@@ -30,7 +38,10 @@ fn touch_file(path: &std::path::PathBuf) {
 pub fn setup() {
     match std::env::var("OPENAI_API_KEY") {
         Ok(_) => (),
-        Err(_) => panic!("OPENAI_API_KEY environment variable not set"),
+        Err(_) => {
+            lprint!(error, "Dewey OPENAI_API_KEY environment variable not set");
+            panic!("OPENAI_API_KEY environment variable not set");
+        }
     }
 
     let config_path = chamber_common::get_config_dir();

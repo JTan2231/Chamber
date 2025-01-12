@@ -189,6 +189,26 @@ pub struct Fork {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct APIKeys {
+    pub openai: String,
+    pub groq: String,
+    pub grok: String,
+    pub anthropic: String,
+    pub gemini: String,
+}
+
+// Represents the state of the user's configured settings and secrets
+// Ideally this will stay as small as possible
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct UserConfig {
+    pub write: bool,
+    #[serde(rename = "apiKeys")]
+    pub api_keys: APIKeys,
+    #[serde(rename = "systemPrompt")]
+    pub system_prompt: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum RequestPayload {
     Ping(Ping),
@@ -197,6 +217,7 @@ pub enum RequestPayload {
     Load(LoadConversation),
     SystemPrompt(SystemPrompt),
     Fork(Fork),
+    Config(UserConfig),
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -208,6 +229,7 @@ pub enum ArrakisRequest {
     Load { payload: LoadConversation },
     SystemPrompt { payload: SystemPrompt },
     Fork { payload: Fork },
+    Config { payload: UserConfig },
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -219,6 +241,7 @@ pub enum ResponsePayload {
     ConversationList(ConversationList),
     Load(Conversation),
     SystemPrompt(SystemPrompt),
+    Config(UserConfig),
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

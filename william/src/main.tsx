@@ -13,7 +13,7 @@ const md = new MarkdownIt({
   html: true,
   linkify: true,
   typographer: true,
-  highlight: function (str, lang) {
+  highlight: function(str, lang) {
     if (lang && hljs.getLanguage(lang)) {
       try {
         return hljs.highlight(str, { language: lang }).value;
@@ -35,7 +35,7 @@ interface WebSocketHookOptions {
 
 interface WebSocketHookReturn {
   socket: WebSocket | null;
-  systemPrompt: string;
+  userConfig: UserConfig | null;
   conversations: Conversation[];
   loadedConversation: Conversation;
   setLoadedConversation: Function;
@@ -98,9 +98,18 @@ const ConversationSchema = z.object({
 
 const CompletionRequestSchema = ConversationSchema;
 
-const SystemPromptRequestSchema = z.object({
-  content: z.string(),
+const ApiKeysSchema = z.object({
+  openai: z.string(),
+  anthropic: z.string(),
+  grok: z.string(),
+  groq: z.string(),
+  gemini: z.string(),
+});
+
+const UserConfigRequestSchema = z.object({
   write: z.boolean(),
+  systemPrompt: z.string(),
+  apiKeys: ApiKeysSchema,
 });
 
 const PingRequestSchema = z.object({
@@ -125,7 +134,7 @@ const CompletionResponseSchema = z.object({
   responseId: z.number(),
 });
 
-const SystemPromptResponseSchema = SystemPromptRequestSchema;
+const UserConfigResponseSchema = UserConfigRequestSchema;
 
 const PingResponseSchema = PingRequestSchema;
 
@@ -150,8 +159,8 @@ const ArrakisRequestSchema = z.discriminatedUnion("method", [
     payload: LoadRequestSchema,
   }),
   z.object({
-    method: z.literal("SystemPrompt"),
-    payload: SystemPromptRequestSchema,
+    method: z.literal("Config"),
+    payload: UserConfigRequestSchema,
   }),
   z.object({
     method: z.literal("Fork"),
@@ -173,15 +182,18 @@ const ArrakisResponseSchema = z.discriminatedUnion("method", [
     payload: CompletionResponseSchema,
   }),
   z.object({
-    method: z.literal("SystemPrompt"),
-    payload: SystemPromptResponseSchema,
+    method: z.literal("Config"),
+    payload: UserConfigResponseSchema,
   }),
 ]);
 
 type API = z.infer<typeof APISchema>;
 type Message = z.infer<typeof MessageSchema>;
 type Conversation = z.infer<typeof ConversationSchema>;
-type SystemPromptRequest = z.infer<typeof SystemPromptRequestSchema>;
+type ApiKeys = z.infer<typeof ApiKeysSchema>;
+type UserConfig = z.infer<typeof UserConfigRequestSchema>;
+type UserConfigRequest = z.infer<typeof UserConfigRequestSchema>;
+type UserConfigResponse = z.infer<typeof UserConfigResponseSchema>;
 type PingRequest = z.infer<typeof PingRequestSchema>;
 type LoadRequest = z.infer<typeof LoadRequestSchema>;
 type ArrakisRequest = z.infer<typeof ArrakisRequestSchema>;
@@ -264,7 +276,7 @@ const useWebSocket = ({
   maxRetries = 0
 }: WebSocketHookOptions): WebSocketHookReturn => {
   const [socket, setSocket] = useState<WebSocket | null>(null);
-  const [systemPrompt, setSystemPrompt] = useState<string>('');
+  const [userConfig, setUserConfig] = useState<UserConfig | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loadedConversation, setLoadedConversation] = useState<Conversation>(conversationDefault());
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected'>('disconnected');
@@ -310,8 +322,9 @@ const useWebSocket = ({
           } else if (response.payload.method === 'Load') {
             const conversation = ConversationSchema.parse(response.payload);
             setLoadedConversation(conversation);
-          } else if (response.payload.method === 'SystemPrompt') {
-            setSystemPrompt(response.payload.content);
+          } else if (response.payload.method === 'Config') {
+            const payload = response.payload as UserConfigResponse;
+            setUserConfig(payload);
           }
         } catch (error) {
           console.log(error);
@@ -363,7 +376,7 @@ const useWebSocket = ({
 
   return {
     socket,
-    systemPrompt,
+    userConfig,
     conversations,
     loadedConversation,
     setLoadedConversation,
@@ -439,8 +452,36 @@ const escapeFromHTML: Record<string, string> = Object.entries(escapeToHTML).redu
   return acc;
 }, {} as Record<string, string>);
 
+// Which model belongs to which provider
+// [Model]: Provider
+const MODEL_PROVIDER_MAPPING: Record<string, string> = {
+  "gpt-4o": "openai",
+  "gpt-4o-mini": "openai",
+  // TODO: These two need implemented in the backend
+  //"o1-preview": "openai",
+  //"o1-mini": "openai",
+  "llama3-70b-8192": "groq",
+  "claude-3-opus-20240229": "anthropic",
+  "claude-3-sonnet-20240229": "anthropic",
+  "claude-3-haiku-20240307": "anthropic",
+  "claude-3-5-sonnet-latest": "anthropic",
+  "claude-3-5-haiku-latest": "anthropic"
+};
+
+const menuButtonStyle: React.CSSProperties = {
+  userSelect: 'none',
+  cursor: 'default',
+  alignSelf: 'center',
+  display: 'flex',
+  justifyContent: 'center',
+  alignItems: 'center',
+  textAlign: 'center',
+  padding: '0 1.5rem',
+  height: '100%',
+};
+
 // Generic dropdown for setting the current LLM backend, which updates the main app state through props.modelCallback
-const ModelDropdown = (props: { model: string, modelCallback: Function }) => {
+const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, modelCallback: Function }) => {
   const [isOpen, setIsOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLDivElement | null>(null);
@@ -468,17 +509,7 @@ const ModelDropdown = (props: { model: string, modelCallback: Function }) => {
       ref={buttonRef}
       onClick={() => setIsOpen(!isOpen)}
       className="buttonHoverLight"
-      style={{
-        userSelect: 'none',
-        cursor: 'default',
-        alignSelf: 'center',
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
-        textAlign: 'center',
-        padding: '0 0.25rem',
-        borderRadius: '0.5rem',
-      }}>
+      style={menuButtonStyle}>
       {props.model}
 
       {
@@ -488,28 +519,27 @@ const ModelDropdown = (props: { model: string, modelCallback: Function }) => {
             className="popup-content"
           >
             {
-              [
-                { model: "gpt-4o", provider: "openai" },
-                { model: "gpt-4o-mini", provider: "openai" },
-                { model: "o1-preview", provider: "openai" },
-                { model: "o1-mini", provider: "openai" },
-                { model: "llama3-70b-8192", provider: "groq" },
-                { model: "claude-3-opus-20240229", provider: "anthropic" },
-                { model: "claude-3-sonnet-20240229", provider: "anthropic" },
-                { model: "claude-3-haiku-20240307", provider: "anthropic" },
-                { model: "claude-3-5-sonnet-latest", provider: "anthropic" },
-                { model: "claude-3-5-haiku-latest", provider: "anthropic" }
-              ].map(m => (
-                <div
-                  onClick={() => props.modelCallback(m)}
-                  className="buttonHover"
-                  style={{
-                    textWrap: 'nowrap',
-                    padding: '0.5rem',
-                  }}>
-                  {m.model}
-                </div>
-              ))
+              Object.keys(MODEL_PROVIDER_MAPPING)
+                // We want to limit the visible model options to those API keys the user has set
+                // i.e., no API key, no model option
+                .filter(m => {
+                  const provider = MODEL_PROVIDER_MAPPING[m];
+                  return !((provider === 'openai' && props.userConfig?.apiKeys.openai === '') ||
+                    (provider === 'anthropic' && props.userConfig?.apiKeys.anthropic === '') ||
+                    (provider === 'groq' && props.userConfig?.apiKeys.groq === ''));
+                })
+                .map(m => ({ model: m, provider: MODEL_PROVIDER_MAPPING[m] }))
+                .map(m => (
+                  <div
+                    onClick={() => props.modelCallback(m)}
+                    className="buttonHover"
+                    style={{
+                      textWrap: 'nowrap',
+                      padding: '0.5rem',
+                    }}>
+                    {m.model}
+                  </div>
+                ))
             }
           </div>
         )
@@ -518,12 +548,119 @@ const ModelDropdown = (props: { model: string, modelCallback: Function }) => {
   );
 };
 
-type Modal = 'search' | 'none';
+// TODO: Take another look at how this is being used,
+//       I think it should probably be removed/refactored at this point
+type Modal = 'config' | 'search' | 'none';
+
+// This serves two purposes:
+// - To prompt the user when they're first opening the app and don't have any API keys set
+// - To serve as the window through which the user changes their settings
+const UserConfigModal = (props: { oldConfig: UserConfig | null, sendMessage: (message: ArrakisRequest) => void, setSelectedModal: (modal: Modal) => void }) => {
+  const [apiKeys, setApiKeys] = useState<ApiKeys>({
+    openai: '',
+    anthropic: '',
+    gemini: '',
+    groq: '',
+    grok: ''
+  });
+
+  const handleInputChange = (provider: string) => (e: any) => {
+    setApiKeys(prev => ({
+      ...prev,
+      [provider]: e.target.value
+    }));
+  };
+
+  const handleSubmit = () => {
+    props.sendMessage({
+      method: 'Config',
+      payload: {
+        write: true,
+        apiKeys,
+        systemPrompt: props.oldConfig ? props.oldConfig.systemPrompt : '',
+      } satisfies UserConfig
+    } satisfies ArrakisRequest);
+
+    props.setSelectedModal('none');
+  };
+
+  return (
+    <div style={{
+      transition: 'all 0.3s',
+      position: 'fixed',
+      backgroundColor: '#F9F8F7dd',
+      minWidth: '480px',
+      width: '25vw',
+      height: '45vh',
+      top: '50%',
+      left: '50%',
+      transform: 'translate(-50%, -50%)',
+      overflow: 'hidden auto',
+      borderRadius: '1rem',
+      zIndex: 750,
+      display: 'flex',
+      flexDirection: 'column',
+      justifyContent: 'center',
+      padding: '24px'
+    }}>
+      <div style={{
+        userSelect: 'none'
+      }}>
+        To work with William, you'll need to set at least one of the following API Keys:
+      </div>
+
+      {Object.entries({
+        'OpenAI': 'openai',
+        'Anthropic': 'anthropic',
+        'Gemini': 'gemini',
+        'Groq': 'groq'
+      }).map(([label, key]) => (
+        <div key={key} style={{
+          display: 'flex',
+          marginTop: '1rem',
+          width: '100%',
+          gap: '16px'
+        }}>
+          <span style={{
+            width: '96px',
+            display: 'flex',
+            alignItems: 'center'
+          }}>{label}</span>
+          <input
+            type="text"
+            placeholder="sk-..."
+            value={apiKeys[key as (keyof typeof apiKeys)]}
+            onChange={handleInputChange(key)}
+            style={{
+              flex: 1,
+              padding: '4px 8px',
+              border: '1px solid #ccc',
+              borderRadius: '4px'
+            }}
+          />
+        </div>
+      ))}
+
+      <button
+        onClick={handleSubmit}
+        style={{
+          width: 'fit-content',
+          padding: '0 0.5rem',
+          marginTop: '1rem',
+          alignSelf: 'flex-end'
+        }}
+        disabled={!Object.values(apiKeys).some(key => key.trim().length > 0)}
+      >
+        Save
+      </button>
+    </div >
+  );
+};
 
 function MainPage() {
   const {
     connectionStatus,
-    systemPrompt,
+    userConfig,
     conversations,
     loadedConversation,
     setLoadedConversation,
@@ -560,24 +697,50 @@ function MainPage() {
   // This is really only used to scroll the chat down to the bottom when a message is being streamed
   const messagesRef = useRef() as React.MutableRefObject<HTMLDivElement>;
 
-  // TODO: This is remarkably terrible
-  //       This is supposed to be a sort of GET request to get the system prompt
-  //       but the nature and presentation of it needs cleaned up badly
+  // Initial fetch of user's stored settings
+  //
+  // TODO: there should be a refactor of `sendMessage` to accept a callback for processing the response
   useEffect(() => {
     if (connectionStatus === 'connected') {
       sendMessage({
-        method: 'SystemPrompt',
+        method: 'Config',
         payload: {
           write: false,
-          content: '',
-        } satisfies SystemPromptRequest
+          systemPrompt: '',
+          apiKeys: {
+            openai: '',
+            grok: '',
+            groq: '',
+            gemini: '',
+            anthropic: '',
+          }
+        } satisfies UserConfigRequest
       } satisfies ArrakisRequest);
-
     }
   }, [connectionStatus]);
 
+  // Once we receive the user settings from the backend,
+  // we do a quick check to see if they've set their API keys
+  //
+  // Not having them set results in an onboarding modal to do so
+  useEffect(() => {
+    if (userConfig &&
+      !(userConfig.apiKeys.openai ||
+        userConfig.apiKeys.groq ||
+        userConfig.apiKeys.anthropic ||
+        userConfig.apiKeys.grok ||
+        userConfig.apiKeys.gemini)) {
+      setSelectedModal('config');
+    }
+  }, [userConfig]);
+
   useEffect(() => {
     const handleKeyPress = (event: any) => {
+      // We don't want to mess with things if the user is digging around outside the chat interface
+      if (selectedModal === 'config') {
+        return;
+      }
+
       // List of keys that shouldn't trigger input focus
       const systemKeys = [
         8,   // Backspace
@@ -767,84 +930,43 @@ function MainPage() {
   }, [selectedModal]);
 
   // Decide which modal to build + return based on the currently selected modal
-  const getModal = () => {
-    if (selectedModal === 'search') {
-      // Callback to load a given conversation based on its ID
-      // Closes the modal, updates the title, and fetches the conversation from the backend
-      const getConversationCallback = (id: number) => {
-        return () => {
-          setDisplayedTitle(titleDefault());
-          setSelectedModal(null);
-          sendMessage({
-            method: 'Load',
-            payload: {
-              id,
-            } satisfies LoadRequest
-          } satisfies ArrakisRequest);
-        };
+  const buildHistoryModal = () => {
+    const getConversationCallback = (id: number) => {
+      return () => {
+        setDisplayedTitle(titleDefault());
+        setSelectedModal(null);
+        sendMessage({
+          method: 'Load',
+          payload: {
+            id,
+          } satisfies LoadRequest
+        } satisfies ArrakisRequest);
       };
+    };
 
-      // Build the modal HTML with the listed conversations
-      return (
-        <div style={{
-          margin: '0.5rem',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-        }}>
-          {conversations.map(c => {
-            return (
-              <div className="buttonHoverLight" onClick={getConversationCallback(c.id!)} style={{
-                padding: '0.5rem',
-                cursor: 'pointer',
-                userSelect: 'none',
-                borderRadius: '0.5rem',
-                textWrap: 'nowrap',
-              }}>
-                {formatTitle(c.name)}
-              </div>
-            );
-          })}
-        </div>
-      );
-    }
-    // Show the system prompt textarea for reading/writing
-    // TODO: make this feature actually work\
-    //
-    // else if (selectedModal === 'systemPrompt') {
-    //   return (
-    //     <div style={{
-    //       margin: '0.5rem',
-    //       display: 'flex',
-    //       flexDirection: 'column',
-    //     }}>
-    //       <textarea id="promptInput" placeholder="You are a helpful assistant." style={{
-    //         border: 0,
-    //         position: 'relative',
-    //         top: '1px',
-    //         outline: 0,
-    //         resize: 'none',
-    //         height: '45vh',
-    //         borderRadius: '0.5rem',
-    //         fontSize: '16px',
-    //         padding: '0.5rem',
-    //         marginBottom: '0.5rem',
-    //         textWrap: 'nowrap',
-    //       }} onBlur={() => {
-    //         // The system prompt is updated on the backend + stored to disk
-    //         // _only_ when the user unfocuses the textarea
-    //         // TODO: this needs changed--it's unintuitive
-    //         sendMessage({
-    //           method: 'SystemPrompt',
-    //           payload: {
-    //             write: true,
-    //             content: (document.getElementById('promptInput')! as HTMLTextAreaElement).value,
-    //           } satisfies SystemPromptRequest
-    //         } satisfies ArrakisRequest);
-    //       }}>{systemPrompt}</textarea>
-    //     </div>
-    //   );
-    // }
+    // Build the modal HTML with the listed conversations
+    return (
+      <div style={{
+        margin: '0.5rem',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }}>
+        {conversations.map(c => {
+          return (
+            <div className="buttonHoverLight" onClick={getConversationCallback(c.id!)} style={{
+              padding: '0.5rem',
+              cursor: 'pointer',
+              userSelect: 'none',
+              borderRadius: '0.5rem',
+              textWrap: 'nowrap',
+            }}>
+              {formatTitle(c.name)}
+            </div>
+          );
+        })}
+      </div>
+    );
   };
 
   // Function for parsing a string + adding Latex math delimiters for Markdown-It-Katex to properly render
@@ -901,16 +1023,39 @@ function MainPage() {
     return result;
   };
 
-  const menuButtonStyle: React.CSSProperties = {
-    userSelect: 'none',
-    cursor: 'default',
-    alignSelf: 'center',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    textAlign: 'center',
-    padding: '0 0.25rem',
-    borderRadius: '0.5rem',
+  // TODO: what's the type here?
+  //
+  // Creates a blurred backdrop to be placed behind a modal
+  // Covers the entire screen and assumes click priority over everything else behind the modal
+  const buildModalBackdrop = (onClickCallback: any, triggerCondition: boolean) => {
+    return (
+      <div style={{
+        position: 'fixed',
+        left: 0,
+        top: 0,
+        height: '100vh',
+        width: '100vw',
+        backgroundColor: 'rgba(236, 240, 255, 0.08)',
+        backdropFilter: triggerCondition ? 'blur(2px)' : 'blur(0px)',
+        WebkitBackdropFilter: triggerCondition ? 'blur(2px)' : 'blur(0px)',
+        transition: 'all 0.3s',
+        opacity: triggerCondition ? 1 : 0,
+        zIndex: 500,
+      }} onClick={onClickCallback} />
+    );
+  };
+
+  const ConfigModal = () => {
+    if (selectedModal === 'config') {
+      return (
+        <>
+          {buildModalBackdrop(() => { }, true)}
+          <UserConfigModal oldConfig={userConfig} sendMessage={sendMessage} setSelectedModal={setSelectedModal} />
+        </>
+      );
+    } else {
+      return <></>;
+    }
   };
 
   // Main window component
@@ -923,20 +1068,19 @@ function MainPage() {
       overflowY: 'auto',
       backgroundColor: '#F9F8F7',
     }}>
-      { /* Header */ }
+      { /* Header */}
       <div style={{
         position: 'fixed',
         height: '2.5rem',
         width: '100%',
         display: 'flex',
-        gap: '1.5rem',
         backgroundColor: '#FFFFFF',
         paddingLeft: '0.5rem',
         borderBottom: '1px solid #CFCFCF',
         boxShadow: '0 1px 3px rgba(0, 0, 0, 0.12)',
         zIndex: 1,
       }}>
-        { /* Element to determine whether the frontend has an established websocket connection with the backend */ }
+        { /* Element to determine whether the frontend has an established websocket connection with the backend */}
         <div style={{
           backgroundColor: connectionStatus === 'disconnected' ? '#F44336' : '#4CAF50',
           userSelect: 'none',
@@ -944,44 +1088,37 @@ function MainPage() {
           height: '24px',
           borderRadius: '0.5rem',
           alignSelf: 'center',
+          marginRight: '0.5rem',
         }} />
 
-        { /* Create a new conversation and clear the current conversation history */ }
+        { /* Create a new conversation and clear the current conversation history */}
         <div className="buttonHoverLight" onClick={() => {
           setSelectedModal(null);
           setLoadedConversation(conversationDefault());
           setDisplayedTitle(titleDefault());
         }} style={menuButtonStyle}>New</div>
 
-        { /* View + give the option to load saved conversations */ }
-        <div className="buttonHoverLight" onClick={() => setSelectedModal(selectedModal !== 'search' ? 'search' : null)} style={menuButtonStyle}>History</div>
+        { /* View + give the option to load saved conversations */}
+        <div
+          className="buttonHoverLight"
+          onClick={() => setSelectedModal('search')}
+          style={menuButtonStyle}>History</div>
 
-        <ModelDropdown model={model.model} modelCallback={setModel} />
+        { /* Dropdown for the user to change which LLM provider + backend they're using for the next message/fork */}
+        <ModelDropdown userConfig={userConfig} model={model.model} modelCallback={setModel} />
 
-        { /* Display element for the selected modal, if any */ }
+        { /* Display element for the selected modal, if any */}
         <div style={{
-          pointerEvents: selectedModal ? 'auto' : 'none',
+          pointerEvents: selectedModal && selectedModal !== 'config' ? 'auto' : 'none',
           transition: 'all 0.3s',
         }}>
+          {buildModalBackdrop(() => setSelectedModal(null), selectedModal !== null && selectedModal !== 'config')}
+
           <div style={{
-            position: 'fixed',
-            left: 0,
-            top: 0,
-            height: '100vh',
-            width: '100vw',
-            backgroundColor: 'rgba(236, 240, 255, 0.08)',
-            backdropFilter: selectedModal ? 'blur(2px)' : 'blur(0px)',
-            WebkitBackdropFilter: selectedModal ? 'blur(2px)' : 'blur(0px)',
             transition: 'all 0.3s',
-            opacity: selectedModal ? 1 : 0,
-          }} onClick={() => setSelectedModal(null)} />
-          <div style={{
-            backdropFilter: selectedModal ? 'blur(2px)' : 'blur(0px)',
-            WebkitBackdropFilter: selectedModal ? 'blur(2px)' : 'blur(0px)',
-            transition: 'all 0.3s',
-            opacity: selectedModal ? 1 : 0,
+            opacity: selectedModal && selectedModal !== 'config' ? 1 : 0,
             position: 'fixed',
-            backgroundColor: '#F9F8F7',
+            backgroundColor: '#FFFFFFEE',
             width: '55vw',
             height: '45vh',
             top: '50%',
@@ -989,11 +1126,45 @@ function MainPage() {
             transform: 'translate(-50%, -50%)',
             overflow: 'hidden auto',
             borderRadius: '1rem',
+            zIndex: 750,
           }}>
-            {getModal()}
+            <div style={{ display: 'flex', }}>
+              <div
+                className="buttonHoverLight"
+                style={{
+                  cursor: 'pointer',
+                  padding: '0.25rem',
+                  margin: '0.5rem', // 0.5rem to line up with the combination of history selection container and the selections themselves
+                  width: '24px',
+                  height: '24px',
+                  borderRadius: '0.5rem',
+                }}
+                onClick={() => setSelectedModal(null)}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                  <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                  </g>
+                </svg>
+              </div>
+              <div style={{ position: 'absolute', left: '50%', top: '0.75rem', transform: 'translateX(-50%)', }}>Chat History</div>
+            </div>
+            {buildHistoryModal()}
           </div>
         </div>
       </div>
+
+      {
+        /*
+         * This is primarily an onboarding component to check if the user has their API keys set
+         * Really, the app is useless without API keys so we're blocking them from moving forward 
+         * until they're configured.
+         *
+         * I think this same component will be used for manual configuration triggers later on
+         */
+      }
+      <ConfigModal />
 
       {
         /*
@@ -1052,7 +1223,8 @@ function MainPage() {
       </div>
       <div style={{
         position: 'relative',
-        width: '40vw',
+        maxWidth: '768px',
+        minWidth: '40vw',
         margin: '0 auto',
         top: 'calc(2.5rem + 1px)',
         flex: 1,
@@ -1074,7 +1246,7 @@ function MainPage() {
           // Escaping the incoming messages to be HTML friendly
           // Particularly, if a message contains HTML it can message with the markdown-parsed output
           // The escaping occurs here to keep from disambiguiation issues later in the pipeline
-          let content = m.content.replace(toPattern, function (match) {
+          let content = m.content.replace(toPattern, function(match) {
             return escapeToHTML[match];
           });
 
@@ -1096,7 +1268,7 @@ function MainPage() {
                 'g'
               );
 
-              return c.replace(fromPattern, function (match) {
+              return c.replace(fromPattern, function(match) {
                 return escapeFromHTML[match];
               })
             }
@@ -1202,7 +1374,7 @@ function MainPage() {
                           last.content = '';
                           last.id = null;
                           last.message_type = 'Assistant';
-                          last.system_prompt = systemPrompt;
+                          last.system_prompt = userConfig ? userConfig.systemPrompt : '';
                           last.api = model;
 
                           conversation.messages[conversation.messages.length - 1] = last;

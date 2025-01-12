@@ -50,20 +50,36 @@ fn setup() {
         }
     };
 
-    println!("home: {}", home_dir);
+    let root = if cfg!(dev) {
+        format!("{}/.local/william-dev", home_dir)
+    } else {
+        format!("{}/.local/william", home_dir)
+    };
 
-    chamber_common::Workspace::new(&format!("{}/.local/william", home_dir));
+    chamber_common::Workspace::new(&root);
 
     create_if_nonexistent(&get_local_dir());
     create_if_nonexistent(&get_embeddings_dir());
     create_if_nonexistent(&get_config_dir());
     create_if_nonexistent(&get_root_dir().join("logs"));
 
+    let log_name = if cfg!(dev) {
+        "debug".to_string()
+    } else {
+        format!(
+            "{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+        )
+    };
+
     // TODO: proper logging, obviously
     chamber_common::Logger::init(
         get_root_dir()
             .join("logs")
-            .join("debug.log")
+            .join(format!("{}.log", log_name))
             .to_str()
             .unwrap(),
     );
@@ -211,6 +227,16 @@ CREATE TABLE IF NOT EXISTS forks (
     to_id INTEGER NOT NULL,
     FOREIGN KEY (from_id) REFERENCES conversations(id) ON DELETE CASCADE,
     FOREIGN KEY (to_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    system_prompt TEXT,
+    openai_key TEXT,
+    groq_key TEXT,
+    grok_key TEXT,
+    anthropic_key TEXT,
+    gemini_key TEXT
 );
 "#;
 
@@ -448,7 +474,7 @@ fn completion(
             // TODO: this feels disgusting. There has to be a better way of telling when the stream
             //       has ended
             Err(e) => {
-                println!("Assuming stream completed... ({})", e);
+                lprint!(info, "Assuming stream completed... ({})", e);
 
                 let response = serde_json::to_string(&ArrakisResponse {
                     payload: ResponsePayload::CompletionEnd,
@@ -478,7 +504,7 @@ fn completion(
                 ) {
                     Ok(_) => {}
                     Err(e) => {
-                        println!("error adding embedding: {}", e);
+                        lprint!(info, "error adding embedding: {}", e);
                     }
                 };
 
@@ -558,16 +584,14 @@ fn get_conversation(conversation_id: i64, db: &rusqlite::Connection) -> Conversa
 // TODO: there is zero error handling around here lol
 async fn websocket_server() {
     setup();
-    println!("Workspace initialized");
+    lprint!(info, "Workspace initialized");
 
-    // TODO: actual handling for getting this tiktoken file
-    //
     // Tokenizer using the GPT-4o token mapping from OpenAI
     let tokenizer_ = std::sync::Arc::new(std::sync::Mutex::new(
         tiktoken::Tokenizer::new().await.unwrap(),
     ));
 
-    println!("Tokenizer initialized");
+    lprint!(info, "Tokenizer initialized");
 
     // The SQLite database is used to store conversations/messages + the like
     // Probably want a more detailed description here
@@ -576,7 +600,7 @@ async fn websocket_server() {
             .expect("Failed to open database"),
     ));
 
-    println!("SQLite connection established");
+    lprint!(info, "SQLite connection established");
 
     // DB initialization
     db_.lock()
@@ -584,15 +608,28 @@ async fn websocket_server() {
         .execute_batch(DB_SETUP_STATEMENTS)
         .expect("Failed to initialize database");
 
-    println!("SQLite database initialized");
+    lprint!(info, "SQLite database initialized");
 
     // Embeddings are retrieved from the OpenAI API and stored locally using Dewey as the index
-    let dewey_ = std::sync::Arc::new(std::sync::Mutex::new(dewey_lib::Dewey::new().unwrap()));
+    let dewey_ = std::sync::Arc::new(std::sync::Mutex::new(match dewey_lib::Dewey::new() {
+        Ok(d) => d,
+        Err(e) => {
+            lprint!(error, "Error initializing Dewey: {}", e);
+            return;
+        }
+    }));
 
-    println!("Dewey initialized");
+    lprint!(info, "Dewey initialized");
 
-    let server = std::net::TcpListener::bind("127.0.0.1:9001").unwrap();
-    println!("WebSocket server listening on ws://127.0.0.1:9001");
+    let server = match std::net::TcpListener::bind("127.0.0.1:9001") {
+        Ok(s) => s,
+        Err(e) => {
+            lprint!(error, "Error binding websocket: {}", e);
+            return;
+        }
+    };
+
+    lprint!(info, "WebSocket server listening on ws://127.0.0.1:9001");
 
     // Websocket server loop
     for stream in server.incoming() {
@@ -630,7 +667,7 @@ async fn websocket_server() {
                     }
                 };
 
-                println!("Request deserialized");
+                lprint!(info, "Request deserialized");
 
                 // Not sure if there is a better way of delineating endpoints, but this is the best
                 // we have right now.
@@ -727,7 +764,11 @@ async fn websocket_server() {
                         if payload.write {
                             match std::fs::write(path.clone(), payload.content) {
                                 Ok(_) => {
-                                    println!("system prompt saved to {}", path.to_str().unwrap());
+                                    lprint!(
+                                        info,
+                                        "system prompt saved to {}",
+                                        path.to_str().unwrap(),
+                                    );
                                 }
                                 Err(e) => {
                                     error!("error saving conversation: {}", e);
@@ -819,6 +860,83 @@ async fn websocket_server() {
                             &mut dewey.lock().unwrap(),
                         );
                     }
+                    ArrakisRequest::Config { payload } => {
+                        println!("Received Config request");
+
+                        let db = db.lock().unwrap();
+
+                        match db.execute("INSERT OR IGNORE INTO user_config (openai_key, groq_key, grok_key, anthropic_key, gemini_key, system_prompt) 
+                                 VALUES ('', '', '', '', '', '')", params![]) {
+                            Ok(_) => {},
+                            Err(e) => {
+                                lprint!(error, "Error setting user_config defaults: {}", e);
+                                return;
+                            }
+                        };
+
+                        if payload.write {
+                            let mut update_stmt = db
+                                .prepare(
+                                    "UPDATE user_config 
+                                     SET openai_key = ?1, 
+                                         groq_key = ?2, 
+                                         grok_key = ?3, 
+                                         anthropic_key = ?4, 
+                                         gemini_key = ?5, 
+                                         system_prompt = ?6",
+                                )
+                                .unwrap();
+
+                            update_stmt
+                                .execute(params![
+                                    payload.api_keys.openai,
+                                    payload.api_keys.groq,
+                                    payload.api_keys.grok,
+                                    payload.api_keys.anthropic,
+                                    payload.api_keys.gemini,
+                                    payload.system_prompt,
+                                ])
+                                .unwrap();
+                        } else {
+                            let mut stmt = db
+                            .prepare(
+                                "SELECT openai_key, groq_key, grok_key, anthropic_key, gemini_key, system_prompt
+                                 FROM user_config LIMIT 1",
+                            )
+                            .unwrap();
+
+                            let config = stmt
+                                .query_row(params![], |row| {
+                                    Ok(UserConfig {
+                                        write: false,
+                                        api_keys: APIKeys {
+                                            openai: row.get(0)?,
+                                            groq: row.get(1)?,
+                                            grok: row.get(2)?,
+                                            anthropic: row.get(3)?,
+                                            gemini: row.get(4)?,
+                                        },
+                                        system_prompt: row.get(5)?,
+                                    })
+                                })
+                                .unwrap();
+
+                            let response = serde_json::to_string(&ArrakisResponse {
+                                payload: ResponsePayload::Config(config),
+                            })
+                            .unwrap();
+
+                            match websocket.write(tungstenite::Message::text(response)) {
+                                Ok(_) => {
+                                    websocket.flush().unwrap();
+                                }
+                                Err(e) => {
+                                    error!("error writing to websocket: {}", e);
+                                    continue;
+                                }
+                            };
+                        }
+                    }
                 };
             }
         });
@@ -830,6 +948,11 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|_| {
             spawn(async move {
+                // // TODO: Temporary for testing
+                // std::env::set_var("OPENAI_API_KEY", "");
+                // std::env::set_var("ANTHROPIC_API_KEY", "");
+                // std::env::set_var("HOME_API_KEY", "");
+
                 websocket_server().await;
             });
             Ok(())
