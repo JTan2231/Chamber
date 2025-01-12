@@ -581,6 +581,44 @@ fn get_conversation(conversation_id: i64, db: &rusqlite::Connection) -> Conversa
     conversation
 }
 
+// Get the user config, or the prepared defaults
+// It really feels gross to insert a default every time we want to fetch the config
+fn get_config(db: &rusqlite::Connection) -> UserConfig {
+    match db.execute("INSERT OR IGNORE INTO user_config (openai_key, groq_key, grok_key, anthropic_key, gemini_key, system_prompt) 
+                      VALUES ('', '', '', '', '', '')", params![]) {
+        Ok(_) => {},
+        Err(e) => {
+            lprint!(error, "Error setting user_config defaults: {}", e);
+            panic!("Error setting user_config defaults: {}", e);
+        }
+    };
+
+    let mut stmt = db
+        .prepare(
+            "SELECT openai_key, groq_key, grok_key, anthropic_key, gemini_key, system_prompt
+                                 FROM user_config LIMIT 1",
+        )
+        .unwrap();
+
+    let config = stmt
+        .query_row(params![], |row| {
+            Ok(UserConfig {
+                write: false,
+                api_keys: APIKeys {
+                    openai: row.get(0)?,
+                    groq: row.get(1)?,
+                    grok: row.get(2)?,
+                    anthropic: row.get(3)?,
+                    gemini: row.get(4)?,
+                },
+                system_prompt: row.get(5)?,
+            })
+        })
+        .unwrap();
+
+    return config;
+}
+
 // TODO: there is zero error handling around here lol
 async fn websocket_server() {
     setup();
@@ -609,6 +647,15 @@ async fn websocket_server() {
         .expect("Failed to initialize database");
 
     lprint!(info, "SQLite database initialized");
+
+    lprint!(info, "Setting environment variables...");
+    let user_config = get_config(&db_.lock().unwrap());
+    std::env::set_var("OPENAI_API_KEY", user_config.api_keys.openai);
+    std::env::set_var("ANTHROPIC_API_KEY", user_config.api_keys.anthropic);
+    std::env::set_var("GEMINI_API_KEY", user_config.api_keys.gemini);
+    std::env::set_var("GROQ_API_KEY", user_config.api_keys.groq);
+
+    lprint!(info, "Environment variables set");
 
     // Embeddings are retrieved from the OpenAI API and stored locally using Dewey as the index
     let dewey_ = std::sync::Arc::new(std::sync::Mutex::new(match dewey_lib::Dewey::new() {
@@ -865,14 +912,7 @@ async fn websocket_server() {
 
                         let db = db.lock().unwrap();
 
-                        match db.execute("INSERT OR IGNORE INTO user_config (openai_key, groq_key, grok_key, anthropic_key, gemini_key, system_prompt) 
-                                 VALUES ('', '', '', '', '', '')", params![]) {
-                            Ok(_) => {},
-                            Err(e) => {
-                                lprint!(error, "Error setting user_config defaults: {}", e);
-                                return;
-                            }
-                        };
+                        let config = get_config(&db);
 
                         if payload.write {
                             let mut update_stmt = db
@@ -898,29 +938,6 @@ async fn websocket_server() {
                                 ])
                                 .unwrap();
                         } else {
-                            let mut stmt = db
-                            .prepare(
-                                "SELECT openai_key, groq_key, grok_key, anthropic_key, gemini_key, system_prompt
-                                 FROM user_config LIMIT 1",
-                            )
-                            .unwrap();
-
-                            let config = stmt
-                                .query_row(params![], |row| {
-                                    Ok(UserConfig {
-                                        write: false,
-                                        api_keys: APIKeys {
-                                            openai: row.get(0)?,
-                                            groq: row.get(1)?,
-                                            grok: row.get(2)?,
-                                            anthropic: row.get(3)?,
-                                            gemini: row.get(4)?,
-                                        },
-                                        system_prompt: row.get(5)?,
-                                    })
-                                })
-                                .unwrap();
-
                             let response = serde_json::to_string(&ArrakisResponse {
                                 payload: ResponsePayload::Config(config),
                             })

@@ -480,6 +480,19 @@ const menuButtonStyle: React.CSSProperties = {
   height: '100%',
 };
 
+// Get a list of models { model: string, provider: string }
+// depending on the availability of configured API keys
+function filterAvailableModels(userConfig: UserConfig | null) {
+  return Object.keys(MODEL_PROVIDER_MAPPING)
+    .filter(m => {
+      const provider = MODEL_PROVIDER_MAPPING[m];
+      return !((provider === 'openai' && userConfig?.apiKeys.openai === '') ||
+        (provider === 'anthropic' && userConfig?.apiKeys.anthropic === '') ||
+        (provider === 'groq' && userConfig?.apiKeys.groq === ''));
+    })
+    .map(m => ({ model: m, provider: MODEL_PROVIDER_MAPPING[m] }));
+}
+
 // Generic dropdown for setting the current LLM backend, which updates the main app state through props.modelCallback
 const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, modelCallback: Function }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -519,27 +532,19 @@ const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, mo
             className="popup-content"
           >
             {
-              Object.keys(MODEL_PROVIDER_MAPPING)
-                // We want to limit the visible model options to those API keys the user has set
-                // i.e., no API key, no model option
-                .filter(m => {
-                  const provider = MODEL_PROVIDER_MAPPING[m];
-                  return !((provider === 'openai' && props.userConfig?.apiKeys.openai === '') ||
-                    (provider === 'anthropic' && props.userConfig?.apiKeys.anthropic === '') ||
-                    (provider === 'groq' && props.userConfig?.apiKeys.groq === ''));
-                })
-                .map(m => ({ model: m, provider: MODEL_PROVIDER_MAPPING[m] }))
-                .map(m => (
-                  <div
-                    onClick={() => props.modelCallback(m)}
-                    className="buttonHover"
-                    style={{
-                      textWrap: 'nowrap',
-                      padding: '0.5rem',
-                    }}>
-                    {m.model}
-                  </div>
-                ))
+              // We want to limit the visible model options to those API keys the user has set
+              // i.e., no API key, no model option
+              filterAvailableModels(props.userConfig).map(m => (
+                <div
+                  onClick={() => props.modelCallback(m)}
+                  className="buttonHover"
+                  style={{
+                    textWrap: 'nowrap',
+                    padding: '0.5rem',
+                  }}>
+                  {m.model}
+                </div>
+              ))
             }
           </div>
         )
@@ -550,12 +555,17 @@ const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, mo
 
 // TODO: Take another look at how this is being used,
 //       I think it should probably be removed/refactored at this point
-type Modal = 'config' | 'search' | 'none';
+type Modal = 'config' | 'search' | null;
 
 // This serves two purposes:
 // - To prompt the user when they're first opening the app and don't have any API keys set
 // - To serve as the window through which the user changes their settings
-const UserConfigModal = (props: { oldConfig: UserConfig | null, sendMessage: (message: ArrakisRequest) => void, setSelectedModal: (modal: Modal) => void }) => {
+const UserConfigModal = (props: {
+  oldConfig: UserConfig | null,
+  sendMessage: (message: ArrakisRequest) => void,
+  setSelectedModal: (modal: Modal) => void,
+  setModel: (model: API) => void,
+}) => {
   const [apiKeys, setApiKeys] = useState<ApiKeys>({
     openai: '',
     anthropic: '',
@@ -572,16 +582,21 @@ const UserConfigModal = (props: { oldConfig: UserConfig | null, sendMessage: (me
   };
 
   const handleSubmit = () => {
+    const newConfig = {
+      write: true,
+      apiKeys,
+      systemPrompt: props.oldConfig ? props.oldConfig.systemPrompt : '',
+    } satisfies UserConfig;
+
     props.sendMessage({
       method: 'Config',
-      payload: {
-        write: true,
-        apiKeys,
-        systemPrompt: props.oldConfig ? props.oldConfig.systemPrompt : '',
-      } satisfies UserConfig
+      payload: newConfig,
     } satisfies ArrakisRequest);
 
-    props.setSelectedModal('none');
+    props.setSelectedModal(null);
+
+    const availableModels = filterAvailableModels(newConfig);
+    props.setModel(availableModels[0] as any);
   };
 
   return (
@@ -679,7 +694,15 @@ function MainPage() {
 
   // This represents the model to be used to generate the next message in the conversation
   // Chosen through the dropdown (jump up?) menu in the bottom left
-  const [model, setModel] = useState<API>({ provider: 'anthropic', model: 'claude-3-5-sonnet-latest' });
+  const [model, setModel] = useState<API>((() => {
+    const availableModels = filterAvailableModels(userConfig);
+    if (availableModels.length > 0) {
+      // TODO: how do we convince the type system that `filterAvailableModels` returns bonafide API structs
+      return availableModels[0] as any;
+    } else {
+      return { provider: 'openai', model: 'gpt-4o' };
+    }
+  })());
 
   // The conversation title card in the top left
   // TODO: this is a little unstable and needs debugging when conversation names are changing around
@@ -1050,7 +1073,12 @@ function MainPage() {
       return (
         <>
           {buildModalBackdrop(() => { }, true)}
-          <UserConfigModal oldConfig={userConfig} sendMessage={sendMessage} setSelectedModal={setSelectedModal} />
+          <UserConfigModal
+            oldConfig={userConfig}
+            sendMessage={sendMessage}
+            setSelectedModal={setSelectedModal}
+            setModel={setModel}
+          />
         </>
       );
     } else {
