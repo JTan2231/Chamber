@@ -401,6 +401,8 @@ fn completion(
         .find(|m| m.message_type == MessageType::User)
         .unwrap();
 
+    let api = last_user_message.api.clone();
+
     let filepath = get_embeddings_dir()
         .join(uuid::Uuid::new_v4().to_string())
         .to_string_lossy()
@@ -420,8 +422,9 @@ fn completion(
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
         match network::prompt_stream(
+            api,
             &messages_payload[..messages_payload.len() - 1].to_vec(),
-            system_prompt,
+            &system_prompt,
             tx,
         ) {
             Ok(_) => {}
