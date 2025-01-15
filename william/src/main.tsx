@@ -367,6 +367,7 @@ const useWebSocket = ({
     }
   }, [socket]);
 
+  // Initial socket connection
   useEffect(() => {
     connect();
 
@@ -388,19 +389,6 @@ const useWebSocket = ({
     error
   };
 };
-
-// TODO: do something with this and scrap it please
-interface Sizing {
-  value: number;
-  unit: string;
-  toString(): string;
-}
-
-function createSizing(value: number, unit: string): Sizing {
-  return {
-    value, unit, toString: () => { return `${value}${unit}`; }
-  };
-}
 
 // Basic converter of HTML strings to proprerly structured react elements
 // needed for parsing/unescaping/markdown-ing each message's contents
@@ -502,6 +490,7 @@ const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, mo
   const popupRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLDivElement | null>(null);
 
+  // Clicking outside the dropdown closes it
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent | any) => {
       if (
@@ -689,6 +678,12 @@ function MainPage() {
     maxRetries: 0
   });
 
+  // These two are used to shove everything up and keep things above the actual chat box
+  // at least, when the chat is at the bottom. The chat input will cover things otherwise.
+  const inputContainerRef = useRef<HTMLDivElement | null>(null);
+  // The unit of this is pixels
+  const [inputContainerHeight, setInputContainerHeight] = useState<number>(0);
+
   // Triggered/set when a modal is selected from the menu buttons on the left side of the screen
   const [selectedModal, setSelectedModal] = useState<Modal | null>(null);
 
@@ -712,16 +707,29 @@ function MainPage() {
   const titleDefault = () => ({ title: '', index: 0 });
   const [displayedTitle, setDisplayedTitle] = useState<{ title: string; index: number; }>(titleDefault());
 
-  // TODO: ???
-  //       this is unbelievably stupid
-  const [inputSizings, _] = useState({
-    height: createSizing(0, 'px'),
-    padding: createSizing(0.75, 'em'),
-    margin: createSizing(1, 'em'),
-  });
-
   // This is really only used to scroll the chat down to the bottom when a message is being streamed
   const messagesRef = useRef() as React.MutableRefObject<HTMLDivElement>;
+
+  // To be honest I'm not really sure why this is here
+  // The UI doesn't work around the chat input correctly without it though
+  useEffect(() => {
+    if (inputContainerRef.current) {
+      const rect = inputContainerRef.current.getBoundingClientRect();
+      setInputContainerHeight(_ => rect.height);
+
+      const container = messagesRef.current;
+      if (container) {
+        // Check if the scrollbar is at the bottom
+        const isScrolledToBottom =
+          container.scrollHeight - container.scrollTop <= container.clientHeight + 18; // ???
+
+        // If it is, scroll to the new bottom
+        if (isScrolledToBottom) {
+          container.scrollTop = container.scrollHeight;
+        }
+      }
+    }
+  }, [inputContainerHeight]);
 
   // Initial fetch of user's stored settings
   //
@@ -764,6 +772,7 @@ function MainPage() {
     }
   }, [userConfig]);
 
+  // Setup event listeners for typing anywhere -> focusing the input
   useEffect(() => {
     const handleKeyPress = (event: any) => {
       // We don't want to mess with things if the user is digging around outside the chat interface
@@ -833,8 +842,8 @@ function MainPage() {
     return guidRegex.test(str);
   }
 
+  // Scroll the conversation to the bottom while streaming the messages
   useEffect(() => {
-    // Scroll the conversation to the bottom while streaming the messages
     if (messagesRef.current) {
       messagesRef.current.scrollTo({
         top: messagesRef.current.scrollHeight,
@@ -875,7 +884,7 @@ function MainPage() {
   // Takes care of the logic of:
   // - Sending the conversation through William's backend
   // - Updating the UI with the new message
-  const sendPrompt = (e: any) => {
+  const handleChatInput = (e: any) => {
     const inputElement = document.getElementById('chatInput') as HTMLDivElement;
     if (e.key === 'Enter') {
       // This is a message submission, not a newline
@@ -1095,12 +1104,12 @@ function MainPage() {
 
   // Main window component
   return (
-    <div ref={messagesRef} onMouseEnter={() => setMouseInChat(true)} onMouseLeave={() => setMouseInChat(false)} style={{
+    <div ref={messagesRef} className="scrollbar" onMouseEnter={() => setMouseInChat(true)} onMouseLeave={() => setMouseInChat(false)} style={{
       height: '100vh',
       display: 'flex',
       flexDirection: 'column',
       width: '100vw',
-      overflowY: 'auto',
+      overflowY: 'scroll',
       backgroundColor: '#F9F8F7',
     }}>
       { /* Header */}
@@ -1155,13 +1164,14 @@ function MainPage() {
         }}>
           {buildModalBackdrop(() => setSelectedModal(null), selectedModal !== null && selectedModal !== 'config')}
 
-          <div style={{
+          <div className="scrollbar" style={{
             transition: 'all 0.3s',
             opacity: selectedModal && selectedModal !== 'config' ? 1 : 0,
             position: 'fixed',
             backgroundColor: '#FFFFFFEE',
             width: '55vw',
-            height: '45vh',
+            maxWidth: '576px',
+            height: '65vh',
             top: '50%',
             left: '50%',
             transform: 'translate(-50%, -50%)',
@@ -1214,17 +1224,18 @@ function MainPage() {
          */
       }
       <div
+        ref={inputContainerRef}
         style={{
           position: 'fixed',
           left: 'calc(50%)',
           transform: 'translateX(-50%)',
-          bottom: '1rem',
+          bottom: '16px',
           // -2rem for margins + padding on the sides
           width: 'calc(100% - 3rem)',
           // 45% of 1920
           maxWidth: '864px',
-          minHeight: '1rem',
-          padding: inputSizings.padding.toString(),
+          minHeight: '16px',
+          padding: '12px',
           backgroundColor: '#EFECEA',
           borderRadius: '0.5rem',
           fontSize: '14px',
@@ -1244,7 +1255,12 @@ function MainPage() {
           <div
             contentEditable={true}
             id="chatInput"
-            onKeyDown={sendPrompt}
+            onKeyDown={handleChatInput}
+            onKeyUp={() => {
+              if (inputContainerRef.current) {
+                setInputContainerHeight(_ => inputContainerRef.current!.getBoundingClientRect().height);
+              }
+            }}
             style={{
               height: '100%',
               width: '100%',
@@ -1262,14 +1278,23 @@ function MainPage() {
           </div>
         </div>
       </div>
+
+      { /* Conversation/message list contents */}
       <div style={{
         position: 'relative',
         maxWidth: '768px',
         minWidth: '40vw',
-        margin: '0 auto',
+        left: '50%',
+        transform: 'translate(-50%)',
+        marginLeft: '20px',
+        marginRight: '20px',
         top: 'calc(2.5rem + 1px)',
         flex: 1,
-        marginBottom: `calc(${inputSizings.height.toString()} + 10vh)`
+        // distance of input container from bottom of screen +
+        // (2x from position relative) height of the input container +
+        // (2x from position relative) padding of the input container +
+        // arbitrary margin to keep things above the input container
+        marginBottom: `calc(16px + ${inputContainerHeight}px + 24px + 24px)`
       }}>
         {loadedConversation.messages.map((m) => {
           // Lot of preprocessing here to properly render the messages into markdown into react components
@@ -1362,7 +1387,7 @@ function MainPage() {
               <div style={{
                 color: '#ABA7A2',
                 fontSize: '0.7rem',
-                marginTop: '1rem',
+                marginTop: '2.5rem',
                 marginLeft: '0.5rem',
                 userSelect: 'none',
                 marginBottom: isUser ? '' : '-0.25rem'
@@ -1437,7 +1462,7 @@ function MainPage() {
           );
         })}
       </div>
-    </div>
+    </div >
   );
 }
 

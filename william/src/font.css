@@ -181,3 +181,23 @@ mi {
 .katex-html {
     display: none;
 }
+
+.scrollbar::-webkit-scrollbar {
+  width: 12px; /* Slightly wider to accommodate padding */
+}
+
+.scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(136, 136, 136, 0.5);
+  border-radius: 8px;
+  border: 3px solid transparent; /* Creates space around the thumb */
+  background-clip: padding-box; /* Ensures the background doesn't show through the border */
+}
+
+.scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(85, 85, 85, 0.7);
+  background-clip: padding-box; /* Maintain transparency on hover */
+}
