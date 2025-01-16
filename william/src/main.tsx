@@ -553,6 +553,7 @@ type Modal = 'config' | 'search' | null;
 // - To prompt the user when they're first opening the app and don't have any API keys set
 // - To serve as the window through which the user changes their settings
 const UserConfigModal = (props: {
+  visible: boolean,
   oldConfig: UserConfig | null,
   sendMessage: (message: ArrakisRequest) => void,
   setSelectedModal: (modal: Modal) => void,
@@ -593,9 +594,8 @@ const UserConfigModal = (props: {
 
   return (
     <div style={{
-      transition: 'all 0.3s',
       position: 'fixed',
-      backgroundColor: '#F9F8F7dd',
+      backgroundColor: '#FDFEFE',
       minWidth: '480px',
       width: '25vw',
       height: '45vh',
@@ -604,11 +604,10 @@ const UserConfigModal = (props: {
       transform: 'translate(-50%, -50%)',
       overflow: 'hidden auto',
       borderRadius: '1rem',
-      zIndex: 750,
       display: 'flex',
       flexDirection: 'column',
       justifyContent: 'center',
-      padding: '24px'
+      padding: '24px',
     }}>
       <div style={{
         userSelect: 'none'
@@ -988,8 +987,8 @@ function MainPage() {
       <div style={{
         margin: '0.5rem',
         display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
+        flexWrap: 'wrap',
+        gap: '16px',
       }}>
         {conversations.map(c => {
           return (
@@ -998,7 +997,10 @@ function MainPage() {
               cursor: 'pointer',
               userSelect: 'none',
               borderRadius: '0.5rem',
-              textWrap: 'nowrap',
+              textWrap: 'pretty',
+              width: '128px',
+              height: '128px',
+              boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
             }}>
               {formatTitle(c.name)}
             </div>
@@ -1084,24 +1086,6 @@ function MainPage() {
     );
   };
 
-  const ConfigModal = (props: { closable: boolean }) => {
-    if (selectedModal === 'config') {
-      return (
-        <>
-          {buildModalBackdrop(props.closable ? () => setSelectedModal(null) : () => { }, true)}
-          <UserConfigModal
-            oldConfig={userConfig}
-            sendMessage={sendMessage}
-            setSelectedModal={setSelectedModal}
-            setModel={setModel}
-          />
-        </>
-      );
-    } else {
-      return <></>;
-    }
-  };
-
   // Main window component
   return (
     <div ref={messagesRef} className="scrollbar" onMouseEnter={() => setMouseInChat(true)} onMouseLeave={() => setMouseInChat(false)} style={{
@@ -1110,7 +1094,7 @@ function MainPage() {
       flexDirection: 'column',
       width: '100vw',
       overflowY: 'scroll',
-      backgroundColor: '#F9F8F7',
+      backgroundColor: '#F8F9F9',
     }}>
       { /* Header */}
       <div style={{
@@ -1159,19 +1143,18 @@ function MainPage() {
 
         { /* Display element for the selected modal, if any */}
         <div style={{
-          pointerEvents: selectedModal && selectedModal !== 'config' ? 'auto' : 'none',
+          pointerEvents: selectedModal === 'search' ? 'auto' : 'none',
           transition: 'all 0.3s',
         }}>
-          {buildModalBackdrop(() => setSelectedModal(null), selectedModal !== null && selectedModal !== 'config')}
+          {buildModalBackdrop(() => setSelectedModal(null), selectedModal === 'search')}
 
           <div className="scrollbar" style={{
             transition: 'all 0.3s',
-            opacity: selectedModal && selectedModal !== 'config' ? 1 : 0,
+            opacity: selectedModal === 'search' ? 0.975 : 0,
             position: 'fixed',
-            backgroundColor: '#FFFFFFEE',
-            width: '55vw',
-            maxWidth: '576px',
-            height: '65vh',
+            backgroundColor: '#FDFEFEEE',
+            width: '85vw',
+            height: '85vh',
             top: '50%',
             left: '50%',
             transform: 'translate(-50%, -50%)',
@@ -1179,7 +1162,11 @@ function MainPage() {
             borderRadius: '1rem',
             zIndex: 750,
           }}>
-            <div style={{ display: 'flex', }}>
+            <div
+              style={{
+                display: 'flex',
+                backgroundColor: '#FDFEFE',
+              }}>
               <div
                 className="buttonHoverLight"
                 style={{
@@ -1199,7 +1186,13 @@ function MainPage() {
                   </g>
                 </svg>
               </div>
-              <div style={{ position: 'absolute', left: '50%', top: '0.75rem', transform: 'translateX(-50%)', }}>Chat History</div>
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '50%',
+                  top: '0.75rem',
+                  transform: 'translateX(-50%)',
+                }}>Chat History</div>
             </div>
             {buildHistoryModal()}
           </div>
@@ -1213,9 +1206,31 @@ function MainPage() {
          * until they're configured.
          *
          * I think this same component will be used for manual configuration triggers later on
+         *
+         * TODO: this doesn't trigger as a separate component???
          */
       }
-      <ConfigModal closable={!needsOnboarding(userConfig)} />
+      <div
+        style={{
+          pointerEvents: selectedModal === 'config' ? 'auto' : 'none',
+        }}>
+        {buildModalBackdrop(!needsOnboarding(userConfig) ? () => setSelectedModal(null) : () => { }, selectedModal === 'config')}
+        <div
+          style={{
+            transition: 'all 0.3s',
+            opacity: selectedModal === 'config' ? 1 : 0,
+            zIndex: 1000,
+            position: 'fixed',
+          }}>
+          <UserConfigModal
+            visible={selectedModal === 'config'}
+            oldConfig={userConfig}
+            sendMessage={sendMessage}
+            setSelectedModal={setSelectedModal}
+            setModel={setModel}
+          />
+        </div>
+      </div>
 
       {
         /*
@@ -1236,7 +1251,7 @@ function MainPage() {
           maxWidth: '864px',
           minHeight: '16px',
           padding: '12px',
-          backgroundColor: '#EFECEA',
+          backgroundColor: '#ECEFEF',
           borderRadius: '0.5rem',
           fontSize: '14px',
           overflow: 'hidden',
@@ -1385,19 +1400,12 @@ function MainPage() {
           return (
             <>
               <div style={{
-                color: '#ABA7A2',
-                fontSize: '0.7rem',
-                marginTop: '2.5rem',
-                marginLeft: '0.5rem',
-                userSelect: 'none',
-                marginBottom: isUser ? '' : '-0.25rem'
-              }}>{isUser ? 'You' : model.model}</div>
-              <div style={{
-                backgroundColor: isUser ? '#E2E0DD' : '',
+                backgroundColor: isUser ? '#E8E9E9' : '',
                 borderRadius: '0.5rem',
-                margin: '0 0.25rem 0.25rem 0.25rem 0.25rem',
+                margin: '2.5rem 0.25rem 1.5rem 0.25rem',
                 padding: '0.01rem 0',
                 width: isUser ? 'fit-content' : '',
+                marginLeft: isUser ? 'auto' : '',
                 position: 'relative',
                 fontSize: '14px',
               }}>

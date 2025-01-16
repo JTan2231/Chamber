@@ -36,7 +36,8 @@ pre {
     padding: 1rem;
     margin: 0;
     border-radius: 0.5rem;
-    background-color: #F2F1EF;
+    background-color: #F4F4F4;
+    border: 1px solid #E0E0E0;
     overflow-x: auto;
 }
 
@@ -72,7 +73,7 @@ li {
 }
 
 .buttonHoverLight:hover {
-    background-color: #EFECEA;
+    background-color: #EDEFEF;
 }
 
 .slideOut {
