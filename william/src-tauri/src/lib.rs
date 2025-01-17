@@ -249,11 +249,20 @@ CREATE TABLE IF NOT EXISTS user_config (
 // Embeds a message if it's not already embedded through Dewey
 // TODO: What's the case in which it's already embedded?
 fn add_message_embedding(
-    dewey: &mut Dewey,
+    // This is really gross
+    // The Option<> gymnastics here are really just remarkably stupid
+    dewey: &mut Option<&mut Dewey>,
     db: &rusqlite::Connection,
     message: &Message,
     filepath: &str,
 ) -> Result<(), std::io::Error> {
+    if dewey.is_none() {
+        lprint!(info, "Dewey unavailable, ignoring embedding request");
+        return Ok(());
+    }
+
+    let dewey = dewey.as_mut();
+
     let exists: bool = db
         .query_row(
             "SELECT 1 FROM message_embeddings WHERE message_id = ?1 LIMIT 1",
@@ -274,7 +283,7 @@ fn add_message_embedding(
     )
     .unwrap();
 
-    dewey.add_embedding(filepath.to_string())?;
+    dewey.unwrap().add_embedding(filepath.to_string())?;
 
     Ok(())
 }
@@ -284,14 +293,9 @@ fn add_message_embedding(
 //       the metastructure at the moment
 fn build_system_prompt(
     conversation_len: usize,
-    filepath: &str,
-    dewey: &mut Dewey,
-    tokenizer: &tiktoken::Tokenizer,
+    dewey_sources: &Vec<dewey_lib::EmbeddingSource>,
+    tokenizer: Option<&tiktoken::Tokenizer>,
 ) -> String {
-    // TODO: error handling
-    // TODO: tokenizer integration in dewey
-    let dewey_sources = dewey.query(filepath, Vec::new(), 5).unwrap();
-
     let mut prompt = "<systemPrompt>".to_string();
     prompt.push_str(r#"
         <objective>
@@ -304,12 +308,18 @@ fn build_system_prompt(
 
     prompt.push_str("<references>");
     for source in dewey_sources {
-        if conversation_len + tokenizer.encode(&prompt).len() > 4096 {
+        let prompt_len = if let Some(tok) = tokenizer {
+            tok.encode(&prompt).len()
+        } else {
+            prompt.len()
+        };
+
+        if conversation_len + prompt_len > 128000 {
             break;
         }
 
         // TODO: error handling
-        let contents = std::fs::read_to_string(source.filepath).unwrap();
+        let contents = std::fs::read_to_string(&source.filepath).unwrap();
 
         let contents = contents[..std::cmp::min(512, contents.len())].to_string();
         prompt.push_str(&format!("<reference>{}</reference>", contents));
@@ -327,7 +337,7 @@ fn build_system_prompt(
 // history to use for the prompt.
 fn cutoff_messages(
     messages: &Vec<Message>,
-    tokenizer: &tiktoken::Tokenizer,
+    tokenizer: Option<&tiktoken::Tokenizer>,
 ) -> (usize, Vec<Message>) {
     let mut cutoff = messages.len() - 1;
     let mut total_len = 0;
@@ -336,10 +346,14 @@ fn cutoff_messages(
             continue;
         }
 
-        total_len += tokenizer.encode(&m.content).len();
+        total_len += if let Some(tok) = tokenizer {
+            tok.encode(&m.content).len()
+        } else {
+            m.content.len()
+        };
 
         // TODO: centralize context window limits for each model
-        if total_len < 4096 {
+        if total_len < 128000 {
             cutoff = std::cmp::max(0, cutoff - 1);
         }
     }
@@ -384,16 +398,16 @@ fn generate_name(conversation: &mut Conversation) {
 fn completion(
     websocket: &mut tungstenite::WebSocket<std::net::TcpStream>,
     mut conversation: Conversation,
-    tokenizer: &tiktoken::Tokenizer,
+    tokenizer: Option<&tiktoken::Tokenizer>,
     db: &rusqlite::Connection,
-    dewey: &mut Dewey,
+    mut dewey: Option<&mut Dewey>,
 ) {
     generate_name(&mut conversation);
 
     // the conversation needs to be set with a db ID at this point
     conversation.upsert(db).unwrap();
 
-    let (total_len, messages_payload) = cutoff_messages(&conversation.messages, &tokenizer);
+    let (total_len, messages_payload) = cutoff_messages(&conversation.messages, tokenizer);
 
     let last_user_message = messages_payload
         .iter()
@@ -412,10 +426,26 @@ fn completion(
     // TODO: system prompt building needs to be more fleshed out
     //       like, minimum sized system prompts?
     std::fs::write(&filepath, last_user_message.content.clone()).unwrap();
-    let system_prompt = build_system_prompt(total_len, &filepath, dewey, tokenizer);
+    let dewey_sources = if let Some(d) = dewey.as_mut() {
+        match d.query(&filepath, Vec::new(), 10) {
+            Ok(ds) => ds,
+            Err(e) => {
+                lprint!(
+                    error,
+                    "Error fetching references from Dewey: {}; ignoring",
+                    e
+                );
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
 
-    // TODO: error handling
-    add_message_embedding(dewey, db, last_user_message, &filepath).unwrap();
+    let system_prompt = build_system_prompt(total_len, &dewey_sources, tokenizer);
+
+    // Update dewey with our message
+    add_message_embedding(&mut dewey, db, last_user_message, &filepath).unwrap();
 
     // Separate thread to communicate with the LLM
     // Message deltas are streamed back through the channel
@@ -498,18 +528,19 @@ fn completion(
 
                 conversation.upsert(db).unwrap();
 
-                // TODO: error handling
-                match add_message_embedding(
-                    dewey,
-                    db,
-                    conversation.messages.last().unwrap(),
-                    &filepath,
-                ) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        lprint!(info, "error adding embedding: {}", e);
-                    }
-                };
+                if dewey.is_some() {
+                    match add_message_embedding(
+                        &mut dewey,
+                        db,
+                        conversation.messages.last().unwrap(),
+                        &filepath,
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            lprint!(info, "error adding embedding: {}", e);
+                        }
+                    };
+                }
 
                 break;
             }
@@ -622,6 +653,16 @@ fn get_config(db: &rusqlite::Connection) -> UserConfig {
     return config;
 }
 
+fn register_env_var(env_var: &str, value: &str) {
+    std::env::set_var(env_var, value);
+    lprint!(
+        info,
+        "{}: {}",
+        env_var,
+        if value.len() > 0 { "***" } else { "" }
+    );
+}
+
 // TODO: there is zero error handling around here lol
 async fn websocket_server() {
     setup();
@@ -629,7 +670,13 @@ async fn websocket_server() {
 
     // Tokenizer using the GPT-4o token mapping from OpenAI
     let tokenizer_ = std::sync::Arc::new(std::sync::Mutex::new(
-        tiktoken::Tokenizer::new().await.unwrap(),
+        match tiktoken::Tokenizer::new().await {
+            Ok(t) => Some(t),
+            Err(e) => {
+                lprint!(error, "Error initializing tokenizer: {}; ignoring...", e);
+                None
+            }
+        },
     ));
 
     lprint!(info, "Tokenizer initialized");
@@ -653,19 +700,19 @@ async fn websocket_server() {
 
     lprint!(info, "Setting environment variables...");
     let user_config = get_config(&db_.lock().unwrap());
-    std::env::set_var("OPENAI_API_KEY", user_config.api_keys.openai);
-    std::env::set_var("ANTHROPIC_API_KEY", user_config.api_keys.anthropic);
-    std::env::set_var("GEMINI_API_KEY", user_config.api_keys.gemini);
-    std::env::set_var("GROQ_API_KEY", user_config.api_keys.groq);
+    register_env_var("OPENAI_API_KEY", &user_config.api_keys.openai);
+    register_env_var("ANTHROPIC_API_KEY", &user_config.api_keys.anthropic);
+    register_env_var("GEMINI_API_KEY", &user_config.api_keys.gemini);
+    register_env_var("GROQ_API_KEY", &user_config.api_keys.groq);
 
     lprint!(info, "Environment variables set");
 
     // Embeddings are retrieved from the OpenAI API and stored locally using Dewey as the index
     let dewey_ = std::sync::Arc::new(std::sync::Mutex::new(match dewey_lib::Dewey::new() {
-        Ok(d) => d,
+        Ok(d) => Some(d),
         Err(e) => {
-            lprint!(error, "Error initializing Dewey: {}", e);
-            return;
+            lprint!(error, "Error initializing Dewey: {}; ignoring...", e);
+            None
         }
     }));
 
@@ -731,9 +778,9 @@ async fn websocket_server() {
                         completion(
                             &mut websocket,
                             payload,
-                            &tokenizer.lock().unwrap(),
+                            tokenizer.lock().unwrap().as_ref(),
                             &db.lock().unwrap(),
-                            &mut dewey.lock().unwrap(),
+                            dewey.lock().unwrap().as_mut(),
                         );
                     }
                     // TODO: Not sure how necessary this is
@@ -905,10 +952,10 @@ async fn websocket_server() {
                         completion(
                             &mut websocket,
                             conversation,
-                            &tokenizer.lock().unwrap(),
+                            tokenizer.lock().unwrap().as_ref(),
                             &db,
-                            &mut dewey.lock().unwrap(),
-                        );
+                            dewey.lock().unwrap().as_mut(),
+                        )
                     }
                     ArrakisRequest::Config { payload } => {
                         println!("Received Config request");

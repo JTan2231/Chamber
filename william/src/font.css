@@ -76,6 +76,15 @@ li {
     background-color: #EDEFEF;
 }
 
+.historyButton {
+    background-color: #FFFFFF;
+    transition: background-color 0.15s ease;
+}
+
+.historyButton:hover {
+    background-color: #EDEFEF;
+}
+
 .slideOut {
     transition: width 0.5s ease;
 }

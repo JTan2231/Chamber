@@ -1,10 +1,10 @@
 use chamber_common::Logger;
-use chamber_common::{error, get_data_dir, info};
+use chamber_common::{error, get_data_dir, info, lprint};
 
 use crate::cache::EmbeddingCache;
 use crate::dbio::BLOCK_SIZE;
 use crate::hnsw::{Filter, Query, HNSW};
-use crate::openai::{embed, EmbeddingSource};
+pub use crate::openai::{embed, EmbeddingSource};
 
 mod cache;
 pub mod config;
@@ -24,6 +24,21 @@ pub struct Dewey {
 impl Dewey {
     pub fn new() -> Result<Self, std::io::Error> {
         crate::config::setup();
+
+        lprint!(info, "Dewey: Verifying OpenAI API key...");
+        let key = std::env::var("OPENAI_API_KEY").map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("OpenAI API key not found: {}", e),
+            )
+        })?;
+
+        if key.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "OpenAI API key is empty",
+            ));
+        }
 
         Ok(Self {
             index: HNSW::new(false)?,
@@ -67,20 +82,20 @@ impl Dewey {
             .collect())
     }
 
-    // this returns an empty json object {} on success
+    // This returns an empty json object {} on success
     // or an object with just an `error` key on error
     pub fn reindex(&mut self, filepath: String) -> Result<(), std::io::Error> {
         crate::dbio::update_file_embeddings(&filepath, &mut self.index)
     }
 
-    /// add a new embedding to the system from the given file
+    /// Add a new embedding to the system from the given file
     ///
-    /// this updates both:
-    /// - the embedding store in the OS file system
-    /// - the in-memory HNSW index
+    /// This updates both:
+    /// - The embedding store in the OS file system
+    /// - The in-memory HNSW index
     ///
-    /// alongside related metadata + other housekeeping files in the OS filesystem:
-    /// - embedding store directory
+    /// Alongside related metadata + other housekeeping files in the OS filesystem:
+    /// - Embedding store directory
     /// - HNSW index file
     pub fn add_embedding(&mut self, filepath: String) -> Result<(), std::io::Error> {
         let mut embedding = embed(&EmbeddingSource {

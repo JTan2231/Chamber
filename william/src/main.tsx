@@ -567,6 +567,16 @@ const UserConfigModal = (props: {
     grok: props.oldConfig ? props.oldConfig.apiKeys.grok : ''
   });
 
+  useEffect(() => {
+    setApiKeys({
+      openai: props.oldConfig ? props.oldConfig.apiKeys.openai : '',
+      anthropic: props.oldConfig ? props.oldConfig.apiKeys.anthropic : '',
+      gemini: props.oldConfig ? props.oldConfig.apiKeys.gemini : '',
+      groq: props.oldConfig ? props.oldConfig.apiKeys.groq : '',
+      grok: props.oldConfig ? props.oldConfig.apiKeys.grok : ''
+    });
+  }, [props.oldConfig]);
+
   const handleInputChange = (provider: string) => (e: any) => {
     setApiKeys(prev => ({
       ...prev,
@@ -663,6 +673,16 @@ const UserConfigModal = (props: {
   );
 };
 
+function getAvailableModel(userConfig: UserConfig | null) {
+  const availableModels = filterAvailableModels(userConfig);
+  if (availableModels.length > 0) {
+    // TODO: how do we convince the type system that `filterAvailableModels` returns bonafide API structs
+    return availableModels[0] as any;
+  } else {
+    return { provider: 'openai', model: 'gpt-4o' };
+  }
+}
+
 function MainPage() {
   const {
     connectionStatus,
@@ -691,15 +711,7 @@ function MainPage() {
 
   // This represents the model to be used to generate the next message in the conversation
   // Chosen through the dropdown (jump up?) menu in the bottom left
-  const [model, setModel] = useState<API>((() => {
-    const availableModels = filterAvailableModels(userConfig);
-    if (availableModels.length > 0) {
-      // TODO: how do we convince the type system that `filterAvailableModels` returns bonafide API structs
-      return availableModels[0] as any;
-    } else {
-      return { provider: 'openai', model: 'gpt-4o' };
-    }
-  })());
+  const [model, setModel] = useState<API>(getAvailableModel(userConfig));
 
   // The conversation title card in the top left
   // TODO: this is a little unstable and needs debugging when conversation names are changing around
@@ -729,6 +741,11 @@ function MainPage() {
       }
     }
   }, [inputContainerHeight]);
+
+  // Set the current model to one that's valid given the set API keys
+  useEffect(() => {
+    setModel(getAvailableModel(userConfig));
+  }, [userConfig]);
 
   // Initial fetch of user's stored settings
   //
@@ -992,7 +1009,7 @@ function MainPage() {
       }}>
         {conversations.map(c => {
           return (
-            <div className="buttonHoverLight" onClick={getConversationCallback(c.id!)} style={{
+            <div className="historyButton" onClick={getConversationCallback(c.id!)} style={{
               padding: '0.5rem',
               cursor: 'pointer',
               userSelect: 'none',
@@ -1077,8 +1094,8 @@ function MainPage() {
         height: '100vh',
         width: '100vw',
         backgroundColor: 'rgba(236, 240, 255, 0.08)',
-        backdropFilter: triggerCondition ? 'blur(2px)' : 'blur(0px)',
-        WebkitBackdropFilter: triggerCondition ? 'blur(2px)' : 'blur(0px)',
+        backdropFilter: triggerCondition ? 'blur(4px)' : 'blur(0px)',
+        WebkitBackdropFilter: triggerCondition ? 'blur(4px)' : 'blur(0px)',
         transition: 'all 0.3s',
         opacity: triggerCondition ? 1 : 0,
         zIndex: 500,
@@ -1102,21 +1119,20 @@ function MainPage() {
         height: '2.5rem',
         width: '100%',
         display: 'flex',
-        backgroundColor: '#FFFFFF',
+        backgroundColor: '#F8F9F9',
         paddingLeft: '0.5rem',
-        borderBottom: '1px solid #CFCFCF',
-        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.12)',
         zIndex: 1,
       }}>
         { /* Element to determine whether the frontend has an established websocket connection with the backend */}
         <div style={{
           backgroundColor: connectionStatus === 'disconnected' ? '#F44336' : '#4CAF50',
           userSelect: 'none',
-          width: '24px',
-          height: '24px',
-          borderRadius: '0.5rem',
+          width: '6px',
+          height: '6px',
+          borderRadius: '50%',
           alignSelf: 'center',
-          marginRight: '0.5rem',
+          marginRight: 'calc(12px + 0.5rem)',
+          marginLeft: '12px',
         }} />
 
         { /* Create a new conversation and clear the current conversation history */}
@@ -1154,7 +1170,7 @@ function MainPage() {
             position: 'fixed',
             backgroundColor: '#FDFEFEEE',
             width: '85vw',
-            height: '85vh',
+            height: '65vh',
             top: '50%',
             left: '50%',
             transform: 'translate(-50%, -50%)',
