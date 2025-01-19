@@ -10,6 +10,53 @@ mod network;
 mod tiktoken;
 mod types;
 
+macro_rules! ws_send {
+    ($ws:expr, $msg:expr) => {
+        match $ws.write(tungstenite::Message::text($msg)) {
+            Ok(_) => {
+                $ws.flush().unwrap();
+            }
+            Err(e) => {
+                error!("error writing to websocket: {}", e);
+            }
+        }
+    };
+}
+
+// Shorthand for handling an error, and sending back a response
+// NOTE: This continues after the response is sent, meaning it maintains the connection.
+//       Use a pattern more akin to `serialize_response!` (e.g., panicking) if you need something
+//       else
+macro_rules! ws_error {
+    ($ws:expr, $error_type:expr, $error_message:expr, $e:expr) => {
+        let message = format!("{}: {}", $error_message, $e);
+        lprint!(error, "{}", message);
+        let response = serialize_response!(
+            WilliamError,
+            WilliamError {
+                error_type: format!("{}", $error_type), // TODO: what do we put here?
+                message
+            }
+        );
+
+        ws_send!($ws, response);
+    }
+}
+
+macro_rules! serialize_response {
+    ($payload_type:ident, $payload:expr) => {
+        match serde_json::to_string(&ArrakisResponse {
+            payload: ResponsePayload::$payload_type($payload),
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                lprint!(error, "Error deserializing response: {}", e);
+                panic!("William can't function with serde errors! Shutting down.");
+            }
+        }
+    };
+}
+
 // Check if a directory exists, and create if needed
 // Mainly just used in initialization
 fn create_if_nonexistent(path: &std::path::PathBuf) {
@@ -409,6 +456,8 @@ fn completion(
 
     let (total_len, messages_payload) = cutoff_messages(&conversation.messages, tokenizer);
 
+    // The conversation has to have at least one message from the user
+    // TODO: This might change later
     let last_user_message = messages_payload
         .iter()
         .rev()
@@ -445,7 +494,12 @@ fn completion(
     let system_prompt = build_system_prompt(total_len, &dewey_sources, tokenizer);
 
     // Update dewey with our message
-    add_message_embedding(&mut dewey, db, last_user_message, &filepath).unwrap();
+    match add_message_embedding(&mut dewey, db, last_user_message, &filepath) {
+        Ok(_) => {}
+        Err(e) => {
+            lprint!(error, "Error adding message to Dewey: {}; ignoring", e);
+        }
+    };
 
     // Separate thread to communicate with the LLM
     // Message deltas are streamed back through the channel
@@ -468,6 +522,8 @@ fn completion(
     loop {
         match rx.recv() {
             Ok(message) => {
+                // -2 to skip the last message, which is being filled by the active completion, and
+                // get the last user message
                 let request_id = conversation.messages[conversation.messages.len() - 2]
                     .id
                     .unwrap();
@@ -482,51 +538,52 @@ fn completion(
                 let response_id = last.id.unwrap();
                 let conversation_name = conversation.name.clone();
 
-                let response = serde_json::to_string(&ArrakisResponse {
-                    payload: ResponsePayload::Completion(Completion {
-                        stream: true,
-                        delta: message,
-                        name: conversation_name,
-                        conversation_id,
-                        request_id,
-                        response_id,
-                    }),
-                })
-                .unwrap();
-
-                match websocket.write(tungstenite::Message::text(response)) {
-                    Ok(_) => {
-                        websocket.flush().unwrap();
-                    }
-                    Err(e) => {
-                        error!("error writing stream to websocket: {}", e);
-                        continue;
-                    }
-                };
+                ws_send!(
+                    websocket,
+                    serialize_response!(
+                        Completion,
+                        Completion {
+                            stream: true,
+                            delta: message,
+                            name: conversation_name,
+                            conversation_id,
+                            request_id,
+                            response_id,
+                        }
+                    )
+                );
             }
             // TODO: this feels disgusting. There has to be a better way of telling when the stream
             //       has ended
             Err(e) => {
                 lprint!(info, "Assuming stream completed... ({})", e);
 
-                let response = serde_json::to_string(&ArrakisResponse {
+                // Weird one-off response serialization
+                let response = match serde_json::to_string(&ArrakisResponse {
                     payload: ResponsePayload::CompletionEnd,
-                })
-                .unwrap();
-
-                match websocket.write(tungstenite::Message::text(response)) {
-                    Ok(_) => {
-                        websocket.flush().unwrap();
-                    }
+                }) {
+                    Ok(r) => r,
                     Err(e) => {
-                        error!("error writing CompletionEnd to websocket: {}", e);
-                        continue;
+                        lprint!(error, "Error deserializing response: {}", e);
+                        panic!("William can't function with serde errors! Shutting down.");
                     }
                 };
 
+                ws_send!(websocket, response);
+
                 // Backend storage duties--SQLite + embedding generation/storage
 
-                conversation.upsert(db).unwrap();
+                match conversation.upsert(db) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        ws_error!(
+                            websocket,
+                            "Completion",
+                            "Error upserting conversation in DB",
+                            e
+                        );
+                    }
+                };
 
                 if dewey.is_some() {
                     match add_message_embedding(
@@ -537,7 +594,7 @@ fn completion(
                     ) {
                         Ok(_) => {}
                         Err(e) => {
-                            lprint!(info, "error adding embedding: {}", e);
+                            lprint!(error, "Error adding message to Dewey: {}; ignoring", e);
                         }
                     };
                 }
@@ -785,74 +842,58 @@ async fn websocket_server() {
                     }
                     // TODO: Not sure how necessary this is
                     ArrakisRequest::Ping { payload: _ } => {
-                        let response = serde_json::to_string(&ArrakisResponse {
-                            payload: ResponsePayload::Ping(Ping {
-                                body: "pong".to_string(),
-                            }),
-                        })
-                        .unwrap();
-
-                        match websocket.write(tungstenite::Message::text(response)) {
-                            Ok(_) => {
-                                websocket.flush().unwrap();
-                            }
-                            Err(e) => {
-                                error!("error writing to websocket: {}", e);
-                                continue;
-                            }
-                        };
+                        ws_send!(
+                            websocket,
+                            serialize_response!(
+                                Ping,
+                                Ping {
+                                    body: "pong".to_string(),
+                                }
+                            )
+                        );
                     }
                     // Retrieve a list of saved conversation IDs
                     ArrakisRequest::ConversationList => {
                         let db = db.lock().unwrap();
                         let mut query = db.prepare("SELECT id, name from conversations").unwrap();
-                        let conversations = query
-                            .query_map(params![], |row| {
-                                Ok(Conversation {
-                                    id: row.get(0)?,
-                                    name: row.get(1)?,
-                                    messages: Vec::new(),
-                                })
+                        let conversations = match query.query_map(params![], |row| {
+                            Ok(Conversation {
+                                id: row.get(0)?,
+                                name: row.get(1)?,
+                                messages: Vec::new(),
                             })
-                            .unwrap()
-                            .map(|c| c.unwrap())
-                            .collect();
-
-                        let response = serde_json::to_string(&ArrakisResponse {
-                            payload: ResponsePayload::ConversationList(ConversationList {
-                                conversations,
-                            }),
-                        })
-                        .unwrap();
-
-                        match websocket.write(tungstenite::Message::text(response)) {
-                            Ok(_) => {
-                                websocket.flush().unwrap();
-                            }
+                        }) {
+                            Ok(q) => q,
                             Err(e) => {
-                                error!("error writing to websocket: {}", e);
+                                ws_error!(
+                                    websocket,
+                                    "ConversationList",
+                                    "Error fetching conversation IDs",
+                                    e
+                                );
                                 continue;
                             }
-                        };
+                        }
+                        .map(|c| c.unwrap())
+                        .collect();
+
+                        ws_send!(
+                            websocket,
+                            serialize_response!(
+                                ConversationList,
+                                ConversationList { conversations }
+                            )
+                        );
                     }
                     // Fetch a conversation from its ID
                     ArrakisRequest::Load { payload } => {
-                        let response = serde_json::to_string(&ArrakisResponse {
-                            payload: ResponsePayload::Load(
-                                get_conversation(payload.id, &db.lock().unwrap()).into(),
-                            ),
-                        })
-                        .unwrap();
-
-                        match websocket.write(tungstenite::Message::text(response)) {
-                            Ok(_) => {
-                                websocket.flush().unwrap();
-                            }
-                            Err(e) => {
-                                error!("error writing to websocket: {}", e);
-                                continue;
-                            }
-                        };
+                        ws_send!(
+                            websocket,
+                            serialize_response!(
+                                Load,
+                                get_conversation(payload.id, &db.lock().unwrap()).into()
+                            )
+                        );
                     }
                     // Read or write to the saved system prompt, depending on the request
                     ArrakisRequest::SystemPrompt { payload } => {
@@ -868,7 +909,13 @@ async fn websocket_server() {
                                     );
                                 }
                                 Err(e) => {
-                                    error!("error saving conversation: {}", e);
+                                    ws_error!(
+                                        websocket,
+                                        "SystemPrompt",
+                                        "Error saving system prompt",
+                                        e
+                                    );
+                                    continue;
                                 }
                             };
 
@@ -878,33 +925,26 @@ async fn websocket_server() {
                         let content = match std::fs::read_to_string(path.clone()) {
                             Ok(c) => c,
                             Err(e) => {
-                                lprint!(
-                                    error,
+                                ws_error!(
+                                    websocket,
+                                    "SystemPrompt",
                                     "error reading system prompt file {}: {}",
-                                    path.to_str().unwrap(),
                                     e
                                 );
                                 continue;
                             }
                         };
 
-                        let response = serde_json::to_string(&ArrakisResponse {
-                            payload: ResponsePayload::SystemPrompt(SystemPrompt {
-                                write: false,
-                                content,
-                            }),
-                        })
-                        .unwrap();
-
-                        match websocket.write(tungstenite::Message::text(response)) {
-                            Ok(_) => {
-                                websocket.flush().unwrap();
-                            }
-                            Err(e) => {
-                                error!("error writing to websocket: {}", e);
-                                continue;
-                            }
-                        };
+                        ws_send!(
+                            websocket,
+                            serialize_response!(
+                                SystemPrompt,
+                                SystemPrompt {
+                                    write: false,
+                                    content,
+                                }
+                            )
+                        );
                     }
                     // get the current conversation,
                     // create the fork,
@@ -928,6 +968,8 @@ async fn websocket_server() {
                             .cloned()
                             .collect();
 
+                        // The conversation should _always_ have at least one element--what would
+                        // there be to fork otherwise?
                         let mut assistant_message = conversation.messages.last().unwrap().clone();
 
                         if assistant_message.message_type != MessageType::Assistant {
@@ -946,8 +988,13 @@ async fn websocket_server() {
                         let new_id = db.last_insert_rowid();
 
                         let fork_query = "INSERT INTO forks (from_id, to_id) VALUES (?, ?)";
-                        db.execute(fork_query, params![payload.conversation_id, new_id])
-                            .unwrap();
+                        match db.execute(fork_query, params![payload.conversation_id, new_id]) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                ws_error!(websocket, "Fork", "Error adding fork to DB", e);
+                                continue;
+                            }
+                        };
 
                         completion(
                             &mut websocket,
@@ -977,32 +1024,26 @@ async fn websocket_server() {
                                 )
                                 .unwrap();
 
-                            update_stmt
-                                .execute(params![
-                                    payload.api_keys.openai,
-                                    payload.api_keys.groq,
-                                    payload.api_keys.grok,
-                                    payload.api_keys.anthropic,
-                                    payload.api_keys.gemini,
-                                    payload.system_prompt,
-                                ])
-                                .unwrap();
-                        } else {
-                            let response = serde_json::to_string(&ArrakisResponse {
-                                payload: ResponsePayload::Config(config),
-                            })
-                            .unwrap();
-
-                            match websocket.write(tungstenite::Message::text(response)) {
-                                Ok(_) => {
-                                    websocket.flush().unwrap();
-                                }
+                            match update_stmt.execute(params![
+                                payload.api_keys.openai,
+                                payload.api_keys.groq,
+                                payload.api_keys.grok,
+                                payload.api_keys.anthropic,
+                                payload.api_keys.gemini,
+                                payload.system_prompt,
+                            ]) {
+                                Ok(_) => {}
                                 Err(e) => {
-                                    error!("error writing to websocket: {}", e);
+                                    ws_error!(websocket, "Config", "Error updating user config", e);
                                     continue;
                                 }
                             };
+                        } else {
+                            ws_send!(websocket, serialize_response!(Config, config));
                         }
+                    }
+                    ArrakisRequest::WilliamError { payload: _ } => {
+                        // There shouldn't be any requests for this type
                     }
                 };
             }
@@ -1015,11 +1056,6 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|_| {
             spawn(async move {
-                // // TODO: Temporary for testing
-                // std::env::set_var("OPENAI_API_KEY", "");
-                // std::env::set_var("ANTHROPIC_API_KEY", "");
-                // std::env::set_var("HOME_API_KEY", "");
-
                 websocket_server().await;
             });
             Ok(())

@@ -153,11 +153,93 @@ pub struct Message {
     pub sequence: i32,
 }
 
+impl Message {
+    pub fn update(&self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {
+        db.execute(
+            "UPDATE messages SET content = ?2 WHERE id = ?1",
+            params![self.id, self.content],
+        )
+    }
+
+    pub fn insert(&mut self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {
+        let (provider, model_name) = self.api.to_strings();
+
+        let api_config_id: i64 = db.query_row(
+            "SELECT id FROM models WHERE provider = ?1 AND name = ?2",
+            params![provider, model_name],
+            |row| row.get(0),
+        )?;
+
+        let update_count = db.execute(
+            "INSERT INTO messages (message_type_id, content, api_config_id, system_prompt) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                self.message_type.id(),
+                self.content,
+                api_config_id,
+                self.system_prompt
+            ],
+        )?;
+
+        self.id = Some(db.last_insert_rowid());
+
+        Ok(update_count)
+    }
+
+    pub fn upsert(&mut self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {
+        if self.update(db)? == 0 {
+            self.insert(db)
+        } else {
+            Ok(1)
+        }
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Conversation {
     pub id: Option<i64>,
     pub name: String,
     pub messages: Vec<Message>,
+}
+
+impl Conversation {
+    // the IDs of all objects _need_ to be set before leaving this function
+    // basic order here is something like:
+    // - upsert conversation table
+    // - upsert each message item (for setting IDs + updating contents)
+    // - reset paths
+    pub fn upsert(&mut self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {
+        if self.id.is_none() {
+            db.execute(
+                "INSERT INTO conversations (name) VALUES (?1)",
+                params![self.name],
+            )?;
+
+            self.id = Some(db.last_insert_rowid());
+        } else {
+            db.execute(
+                "UPDATE conversations SET name = ?2 WHERE id = ?1",
+                params![self.id, self.name],
+            )?;
+        }
+
+        for message in self.messages.iter_mut() {
+            message.upsert(db)?;
+        }
+
+        db.execute(
+            "DELETE FROM paths WHERE conversation_id = ?1",
+            params![self.id],
+        )?;
+
+        for (sequence, message) in self.messages.iter().enumerate() {
+            db.execute(
+                "INSERT INTO paths (conversation_id, message_id, sequence) VALUES (?1, ?2, ?3)",
+                params![self.id, message.id, sequence as i64],
+            )?;
+        }
+
+        Ok(1)
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -220,6 +302,37 @@ pub enum RequestPayload {
     Config(UserConfig),
 }
 
+/// Request in JSON form looks like
+/// {
+///     "method": <request enum type>,
+///     "payload": {
+///         <request payload JSON>
+///     }
+/// }
+///
+/// e.g.,
+/// // Update configuration
+/// {
+///   "method": "Config",
+///   "payload": {
+///     "write": true,
+///     "apiKeys": {
+///       "openai": "sk-...",
+///       "groq": "gsk-...",
+///       "grok": "...",
+///       "anthropic": "sk-ant-...",
+///       "gemini": "..."
+///     },
+///     "systemPrompt": "You are a helpful assistant"
+///   }
+/// }
+///
+/// To add new request types:
+/// 1. Add a new struct for the payload type
+/// 2. Add a new variant the `RequestPayload`
+/// 3. Add a new variant the `ArrakisRequest`
+///
+/// This process is the same for responses
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "method")]
 pub enum ArrakisRequest {
@@ -230,6 +343,7 @@ pub enum ArrakisRequest {
     SystemPrompt { payload: SystemPrompt },
     Fork { payload: Fork },
     Config { payload: UserConfig },
+    WilliamError { payload: WilliamError },
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -242,6 +356,13 @@ pub enum ResponsePayload {
     Load(Conversation),
     SystemPrompt(SystemPrompt),
     Config(UserConfig),
+    WilliamError(WilliamError),
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct WilliamError {
+    pub error_type: String,
+    pub message: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -294,86 +415,4 @@ pub struct RequestParams {
     pub authorization_token: String,
     pub max_tokens: Option<u16>,
     pub system_prompt: Option<String>,
-}
-
-impl Message {
-    pub fn update(&self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {
-        db.execute(
-            "UPDATE messages SET content = ?2 WHERE id = ?1",
-            params![self.id, self.content],
-        )
-    }
-
-    pub fn insert(&mut self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {
-        let (provider, model_name) = self.api.to_strings();
-
-        let api_config_id: i64 = db.query_row(
-            "SELECT id FROM models WHERE provider = ?1 AND name = ?2",
-            params![provider, model_name],
-            |row| row.get(0),
-        )?;
-
-        let update_count = db.execute(
-            "INSERT INTO messages (message_type_id, content, api_config_id, system_prompt) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                self.message_type.id(),
-                self.content,
-                api_config_id,
-                self.system_prompt
-            ],
-        )?;
-
-        self.id = Some(db.last_insert_rowid());
-
-        Ok(update_count)
-    }
-
-    pub fn upsert(&mut self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {
-        if self.update(db)? == 0 {
-            self.insert(db)
-        } else {
-            Ok(1)
-        }
-    }
-}
-
-impl Conversation {
-    // the IDs of all objects _need_ to be set before leaving this function
-    // basic order here is something like:
-    // - upsert conversation table
-    // - upsert each message item (for setting IDs + updating contents)
-    // - reset paths
-    pub fn upsert(&mut self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {
-        if self.id.is_none() {
-            db.execute(
-                "INSERT INTO conversations (name) VALUES (?1)",
-                params![self.name],
-            )?;
-
-            self.id = Some(db.last_insert_rowid());
-        } else {
-            db.execute(
-                "UPDATE conversations SET name = ?2 WHERE id = ?1",
-                params![self.id, self.name],
-            )?;
-        }
-
-        for message in self.messages.iter_mut() {
-            message.upsert(db)?;
-        }
-
-        db.execute(
-            "DELETE FROM paths WHERE conversation_id = ?1",
-            params![self.id],
-        )?;
-
-        for (sequence, message) in self.messages.iter().enumerate() {
-            db.execute(
-                "INSERT INTO paths (conversation_id, message_id, sequence) VALUES (?1, ?2, ?3)",
-                params![self.id, message.id, sequence as i64],
-            )?;
-        }
-
-        Ok(1)
-    }
 }

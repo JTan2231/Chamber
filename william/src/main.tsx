@@ -137,6 +137,11 @@ const CompletionResponseSchema = z.object({
   responseId: z.number(),
 });
 
+const ErrorResponseSchema = z.object({
+  error_type: z.string(),
+  message: z.string(),
+});
+
 const UserConfigResponseSchema = UserConfigRequestSchema;
 
 const PingResponseSchema = PingRequestSchema;
@@ -188,6 +193,10 @@ const ArrakisResponseSchema = z.discriminatedUnion("method", [
     method: z.literal("Config"),
     payload: UserConfigResponseSchema,
   }),
+  z.object({
+    method: z.literal("WilliamError"),
+    payload: ErrorResponseSchema,
+  }),
 ]);
 
 type API = z.infer<typeof APISchema>;
@@ -201,6 +210,7 @@ type PingRequest = z.infer<typeof PingRequestSchema>;
 type LoadRequest = z.infer<typeof LoadRequestSchema>;
 type ArrakisRequest = z.infer<typeof ArrakisRequestSchema>;
 type ArrakisResponse = z.infer<typeof ArrakisResponseSchema>;
+type ErrorResponse = z.infer<typeof ErrorResponseSchema>;
 
 // TODO: disgusting mixing of concerns between this and the main page
 //       should probably centralize everything dealing with message responses
@@ -298,6 +308,10 @@ const useWebSocket = ({
 
       // This is a sorry excuse for a REST-ish API
       // I feel like there's a much better way of structuring the "endpoints" supported by both the front + back ends
+      //
+      // TODO: The response structure doesn't match the request structure
+      //       with the { method: string, payload: {...} }
+      //       It's currently { method: string, ...payload }
       ws.onmessage = (event) => {
         try {
           const response = JSON.parse(event.data) satisfies ArrakisResponse;
@@ -326,8 +340,11 @@ const useWebSocket = ({
             const conversation = ConversationSchema.parse(response.payload);
             setLoadedConversation(conversation);
           } else if (response.payload.method === 'Config') {
-            const payload = response.payload as UserConfigResponse;
+            const payload = UserConfigResponseSchema.parse(response.payload);
             setUserConfig(payload);
+          } else if (response.payload.method === 'WilliamError') {
+            const payload = ErrorResponseSchema.parse(response.payload);
+            setError(new Error(payload.message));
           }
         } catch (error) {
           console.log(error);
@@ -683,6 +700,60 @@ function getAvailableModel(userConfig: UserConfig | null) {
   }
 }
 
+// The little dot in the top left
+// Will tell the status of the backend connection + any errors when hovered
+function ConnectionStatus(props: { error: Error | null, connectionStatus: string }) {
+  // Array of [x, y]
+  const [mousePosition, setMousePosition] = useState<number[]>([0, 0]);
+  const [mouseIn, setMouseIn] = useState<boolean>(false);
+
+  const padding = 5;
+
+  return (
+    <>
+      <div
+        style={{
+          pointerEvents: 'none',
+          position: 'fixed',
+          left: `${mousePosition[0]}px`,
+          top: `${mousePosition[1]}px`,
+          transition: 'opacity 0.5s',
+          opacity: mouseIn ? 1 : 0,
+          fontSize: '14px',
+          backgroundColor: '#F8F9F9',
+          borderRadius: '5px',
+          padding: `${padding}px`,
+          color: props.error ? '#F44336' : '#4CAF50',
+        }}
+      >{props.error ? props.error.toString() : (props.connectionStatus === 'connected' ? 'Connected!' : 'Disconnected')}</div>
+      <div
+        style={{
+          width: '36px',
+          height: '100%',
+        }}
+        onMouseEnter={() => setMouseIn(true)}
+        onMouseLeave={() => setMouseIn(false)}
+        onMouseMove={(e: React.MouseEvent<HTMLDivElement>) => setMousePosition([e.clientX + padding, e.clientY + padding])}
+      >
+        <div
+          style={{
+            backgroundColor: props.error !== null || props.connectionStatus === 'disconnected' ? '#F44336' : '#4CAF50',
+            userSelect: 'none',
+            width: '6px',
+            height: '6px',
+            borderRadius: '50%',
+            alignSelf: 'center',
+            position: 'relative',
+            left: '50%',
+            top: '50%',
+            transform: 'translate(-50%, -50%)',
+          }}
+        />
+      </div>
+    </>
+  );
+}
+
 function MainPage() {
   const {
     connectionStatus,
@@ -691,6 +762,7 @@ function MainPage() {
     loadedConversation,
     setLoadedConversation,
     sendMessage,
+    error,
   } = useWebSocket({
     url: 'ws://localhost:9001',
     retryInterval: 5000,
@@ -1124,16 +1196,7 @@ function MainPage() {
         zIndex: 1,
       }}>
         { /* Element to determine whether the frontend has an established websocket connection with the backend */}
-        <div style={{
-          backgroundColor: connectionStatus === 'disconnected' ? '#F44336' : '#4CAF50',
-          userSelect: 'none',
-          width: '6px',
-          height: '6px',
-          borderRadius: '50%',
-          alignSelf: 'center',
-          marginRight: 'calc(12px + 0.5rem)',
-          marginLeft: '12px',
-        }} />
+        <ConnectionStatus error={error} connectionStatus={connectionStatus} />
 
         { /* Create a new conversation and clear the current conversation history */}
         <div className="buttonHoverLight" onClick={() => {
@@ -1267,7 +1330,7 @@ function MainPage() {
           maxWidth: '864px',
           minHeight: '16px',
           padding: '12px',
-          backgroundColor: '#ECEFEF',
+          backgroundColor: '#EDEFEF',
           borderRadius: '0.5rem',
           fontSize: '14px',
           overflow: 'hidden',
