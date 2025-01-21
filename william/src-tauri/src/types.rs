@@ -5,6 +5,7 @@ pub enum MessageType {
     System,
     User,
     Assistant,
+    Developer,
 }
 
 impl MessageType {
@@ -13,6 +14,7 @@ impl MessageType {
             MessageType::System => "system".to_string(),
             MessageType::User => "user".to_string(),
             MessageType::Assistant => "assistant".to_string(),
+            MessageType::Developer => "developer".to_string(),
         }
     }
 
@@ -21,6 +23,7 @@ impl MessageType {
             MessageType::System => 0,
             MessageType::User => 1,
             MessageType::Assistant => 2,
+            MessageType::Developer => 2,
         }
     }
 
@@ -29,6 +32,7 @@ impl MessageType {
             0 => Ok(MessageType::System),
             1 => Ok(MessageType::User),
             2 => Ok(MessageType::Assistant),
+            3 => Ok(MessageType::Developer),
             _ => Err(format!("Invalid message type: {}", id)),
         }
     }

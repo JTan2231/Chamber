@@ -205,12 +205,10 @@ type Conversation = z.infer<typeof ConversationSchema>;
 type ApiKeys = z.infer<typeof ApiKeysSchema>;
 type UserConfig = z.infer<typeof UserConfigRequestSchema>;
 type UserConfigRequest = z.infer<typeof UserConfigRequestSchema>;
-type UserConfigResponse = z.infer<typeof UserConfigResponseSchema>;
 type PingRequest = z.infer<typeof PingRequestSchema>;
 type LoadRequest = z.infer<typeof LoadRequestSchema>;
 type ArrakisRequest = z.infer<typeof ArrakisRequestSchema>;
 type ArrakisResponse = z.infer<typeof ArrakisResponseSchema>;
-type ErrorResponse = z.infer<typeof ErrorResponseSchema>;
 
 // TODO: disgusting mixing of concerns between this and the main page
 //       should probably centralize everything dealing with message responses
@@ -465,9 +463,8 @@ const escapeFromHTML: Record<string, string> = Object.entries(escapeToHTML).redu
 const MODEL_PROVIDER_MAPPING: Record<string, string> = {
   "gpt-4o": "openai",
   "gpt-4o-mini": "openai",
-  // TODO: These two need implemented in the backend
-  //"o1-preview": "openai",
-  //"o1-mini": "openai",
+  "o1-preview": "openai",
+  "o1-mini": "openai",
   "llama3-70b-8192": "groq",
   "claude-3-opus-20240229": "anthropic",
   "claude-3-sonnet-20240229": "anthropic",

@@ -71,6 +71,8 @@ fn build_request(
         _ => panic!("Invalid provider for request_body: {}", params.provider),
     };
 
+    println!("{:?}", body);
+
     let url = format!("https://{}:{}{}", params.host, params.port, params.path);
     let mut request = client.post(url.clone()).json(&body);
 
@@ -109,14 +111,18 @@ fn get_openai_request_params(
         host: "api.openai.com".to_string(),
         path: "/v1/chat/completions".to_string(),
         port: 443,
-        messages: vec![Message {
-            id: None,
-            message_type: MessageType::System,
-            content: system_prompt.clone(),
-            api,
-            system_prompt,
-            sequence: -1,
-        }]
+        messages: if model.contains("o1") {
+            vec![]
+        } else {
+            vec![Message {
+                id: None,
+                message_type: MessageType::Developer,
+                content: system_prompt.clone(),
+                api,
+                system_prompt,
+                sequence: -1,
+            }]
+        }
         .iter()
         .chain(chat_history.iter())
         .cloned()
@@ -357,21 +363,6 @@ fn read_json_response(api: &API, response_json: &serde_json::Value) -> String {
     }
 }
 
-// TODO: error handling
-fn connect_https(host: &str, port: u16) -> native_tls::TlsStream<std::net::TcpStream> {
-    let addr = (host, port)
-        .to_socket_addrs()
-        .unwrap()
-        .find(|addr| addr.is_ipv4())
-        .expect("No IPv4 address found");
-
-    let stream = TcpStream::connect(&addr).unwrap();
-
-    let connector = native_tls::TlsConnector::new().expect("TLS connector failed to create");
-
-    connector.connect(host, stream).unwrap()
-}
-
 // TODO: I'm wondering if it's even worth making a synchronous version
 //
 /// Function for streaming responses from the LLM.
@@ -385,9 +376,19 @@ pub fn prompt_stream(
     let params = get_params(system_prompt, api.clone(), chat_history, true);
     let client = reqwest::blocking::Client::new();
 
+    let request = build_request(&client, &params);
     let response = build_request(&client, &params)
         .send()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_body = response
+            .text()
+            .unwrap_or_else(|_| String::from("Could not read error response"));
+
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, error_body));
+    }
 
     let content = match api {
         API::Anthropic(_) => process_anthropic_stream(response, &tx),

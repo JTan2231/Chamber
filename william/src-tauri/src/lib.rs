@@ -503,6 +503,7 @@ fn completion(
 
     // Separate thread to communicate with the LLM
     // Message deltas are streamed back through the channel
+    // TODO: We need a better way of propagating errors back to this main thread
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
         match network::prompt_stream(
@@ -513,15 +514,19 @@ fn completion(
         ) {
             Ok(_) => {}
             Err(e) => {
-                error!("error sending message to GPT endpoint: {}", e);
-                std::process::exit(1);
+                lprint!(error, "error sending message to GPT endpoint: {}", e);
             }
         }
     });
 
+    // Set to true when we receive our first delta
+    // If this remains false, this will trigger an error
+    let mut message_received = false;
     loop {
         match rx.recv() {
             Ok(message) => {
+                message_received = true;
+
                 // -2 to skip the last message, which is being filled by the active completion, and
                 // get the last user message
                 let request_id = conversation.messages[conversation.messages.len() - 2]
@@ -602,6 +607,19 @@ fn completion(
                 break;
             }
         }
+    }
+
+    // TODO: This error handling needs refactored
+    if !message_received {
+        ws_error!(
+            websocket,
+            "Completion",
+            "Error receiving completion delta",
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Error receiving completion delta"
+            )
+        );
     }
 }
 
