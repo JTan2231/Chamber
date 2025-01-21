@@ -857,12 +857,32 @@ function MainPage() {
     }
   }, [userConfig]);
 
+  // Start a new conversation
+  const resetConversation = () => {
+    setSelectedModal(null);
+    setLoadedConversation(conversationDefault());
+    setDisplayedTitle(titleDefault());
+  };
+
   // Setup event listeners for typing anywhere -> focusing the input
   useEffect(() => {
     const handleKeyPress = (event: any) => {
       // We don't want to mess with things if the user is digging around outside the chat interface
       if (selectedModal === 'config') {
         return;
+      }
+
+      // Checking hotkeys
+      if (event.ctrlKey) {
+        if (event.key === 'h') {
+          setSelectedModal('search');
+        } else if (event.key === 'n') {
+          resetConversation();
+        }
+      }
+
+      if (event.key === 'Escape') {
+        setSelectedModal(null);
       }
 
       // List of keys that shouldn't trigger input focus
@@ -1196,11 +1216,7 @@ function MainPage() {
         <ConnectionStatus error={error} connectionStatus={connectionStatus} />
 
         { /* Create a new conversation and clear the current conversation history */}
-        <div className="buttonHoverLight" onClick={() => {
-          setSelectedModal(null);
-          setLoadedConversation(conversationDefault());
-          setDisplayedTitle(titleDefault());
-        }} style={menuButtonStyle}>New</div>
+        <div className="buttonHoverLight" onClick={resetConversation} style={menuButtonStyle}>New</div>
 
         { /* View + give the option to load saved conversations */}
         <div
@@ -1478,7 +1494,7 @@ function MainPage() {
               <div style={{
                 backgroundColor: isUser ? '#E8E9E9' : '',
                 borderRadius: '0.5rem',
-                margin: '2.5rem 0.25rem 1.5rem 0.25rem',
+                margin: '2rem 0.25rem 1.5rem 0.25rem',
                 padding: '0.01rem 0',
                 width: isUser ? 'fit-content' : '',
                 marginLeft: isUser ? 'auto' : '',
