@@ -5,13 +5,13 @@ and only exposed to their respective LLM providers.
 
 # Features
 
-[x] Markdown chats
-[x] o1 models
-[x] RAG memory
-[ ] Secure API key storage
-[ ] (Better) Conversation forking + message retries
-[ ] Artifacts
-[ ] Non-webkit UI
+- [x] Markdown chats
+- [x] o1 models
+- [x] RAG memory
+- [ ] Secure API key storage
+- [ ] (Better) Conversation forking + message retries
+- [ ] Artifacts
+- [ ] Non-webkit UI
 
 # Usage
 
