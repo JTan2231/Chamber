@@ -239,7 +239,9 @@ WHERE NOT EXISTS (SELECT 1 FROM models WHERE name = 'claude-3-5-haiku-latest' AN
 
 CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    last_updated TIMESTAMP NOT NULL,
+    date_created TIMESTAMP NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -408,25 +410,35 @@ fn cutoff_messages(
     (total_len, messages[cutoff..].to_vec())
 }
 
+// Get a simple name of the conversation from GPT4oMini
+// based on the initial message in the conversation
+//
+// If the user doesn't have an OpenAI API key registered,
+// just use the first 20 characters of the conversation
 fn generate_name(conversation: &mut Conversation) {
     // TODO: this needs to be async
     if is_valid_guid(&conversation.name) {
-        let new_name = network::prompt(
-            API::OpenAI(OpenAIModel::GPT4oMini),
-            &r#"
+        let first_message = conversation.messages[0].clone();
+        let new_name = if let Ok(_) = std::env::var("OPENAI_API_KEY") {
+            network::prompt(
+                API::OpenAI(OpenAIModel::GPT4oMini),
+                &r#"
             You will be given the start of a conversation.
             Give it a name.
             Guidelines:
             - No markdown
             - Respond with _only_ the name.
             "#
-            .to_string(),
-            &vec![conversation.messages[0].clone()],
-        );
-
-        conversation.name = new_name
+                .to_string(),
+                &vec![first_message],
+            )
             .unwrap()
             .content
+        } else {
+            first_message.content[..std::cmp::min(20, first_message.content.len())].to_string()
+        };
+
+        conversation.name = new_name
             .chars()
             .map(|c| match c {
                 '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
@@ -873,7 +885,17 @@ async fn websocket_server() {
                     // Retrieve a list of saved conversation IDs
                     ArrakisRequest::ConversationList => {
                         let db = db.lock().unwrap();
-                        let mut query = db.prepare("SELECT id, name from conversations").unwrap();
+                        let mut query = db
+                            .prepare(
+                                "
+                            SELECT
+                                id,
+                                name
+                            from conversations
+                            order by last_updated desc
+                        ",
+                            )
+                            .unwrap();
                         let conversations = match query.query_map(params![], |row| {
                             Ok(Conversation {
                                 id: row.get(0)?,

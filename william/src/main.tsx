@@ -351,7 +351,7 @@ const useWebSocket = ({
 
       // TODO: this needs to be expanded
       ws.onerror = (_) => {
-        setError(new Error('WebSocket error occurred'));
+        setError(new Error('WebSocket error occurred--backend panic?'));
       };
 
       ws.onclose = () => {

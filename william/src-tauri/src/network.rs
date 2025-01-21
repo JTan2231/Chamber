@@ -71,8 +71,6 @@ fn build_request(
         _ => panic!("Invalid provider for request_body: {}", params.provider),
     };
 
-    println!("{:?}", body);
-
     let url = format!("https://{}:{}{}", params.host, params.port, params.path);
     let mut request = client.post(url.clone()).json(&body);
 

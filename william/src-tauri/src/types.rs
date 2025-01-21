@@ -214,14 +214,14 @@ impl Conversation {
     pub fn upsert(&mut self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {
         if self.id.is_none() {
             db.execute(
-                "INSERT INTO conversations (name) VALUES (?1)",
+                "INSERT INTO conversations (name, last_updated, date_created) VALUES (?1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
                 params![self.name],
             )?;
 
             self.id = Some(db.last_insert_rowid());
         } else {
             db.execute(
-                "UPDATE conversations SET name = ?2 WHERE id = ?1",
+                "UPDATE conversations SET name = ?2, last_updated = CURRENT_TIMESTAMP WHERE id = ?1",
                 params![self.id, self.name],
             )?;
         }
