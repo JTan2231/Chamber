@@ -460,17 +460,33 @@ const escapeFromHTML: Record<string, string> = Object.entries(escapeToHTML).redu
 
 // Which model belongs to which provider
 // [Model]: Provider
+//
+// TODO: These are commented out because I haven't figured out a smarter scheme for mapping models to names
 const MODEL_PROVIDER_MAPPING: Record<string, string> = {
   "gpt-4o": "openai",
-  "gpt-4o-mini": "openai",
+  // "gpt-4o-mini": "openai",
   "o1-preview": "openai",
-  "o1-mini": "openai",
+  // "o1-mini": "openai",
   "llama3-70b-8192": "groq",
-  "claude-3-opus-20240229": "anthropic",
-  "claude-3-sonnet-20240229": "anthropic",
-  "claude-3-haiku-20240307": "anthropic",
+  // "claude-3-opus-20240229": "anthropic",
+  // "claude-3-sonnet-20240229": "anthropic",
+  // "claude-3-haiku-20240307": "anthropic",
   "claude-3-5-sonnet-latest": "anthropic",
-  "claude-3-5-haiku-latest": "anthropic"
+  // "claude-3-5-haiku-latest": "anthropic"
+};
+
+// TODO: This needs to be better + more robust
+const MODEL_LABEL_MAPPING: Record<string, string> = {
+  "gpt-4o": "GPT",
+  // "gpt-4o-mini": "openai",
+  "o1-preview": "GPT (smarter)",
+  // "o1-mini": "openai",
+  "llama3-70b-8192": "LLaMA",
+  // "claude-3-opus-20240229": "anthropic",
+  // "claude-3-sonnet-20240229": "anthropic",
+  // "claude-3-haiku-20240307": "anthropic",
+  "claude-3-5-sonnet-latest": "Claude",
+  // "claude-3-5-haiku-latest": "anthropic"
 };
 
 const menuButtonStyle: React.CSSProperties = {
@@ -495,7 +511,7 @@ function filterAvailableModels(userConfig: UserConfig | null) {
         (provider === 'anthropic' && userConfig?.apiKeys.anthropic === '') ||
         (provider === 'groq' && userConfig?.apiKeys.groq === ''));
     })
-    .map(m => ({ model: m, provider: MODEL_PROVIDER_MAPPING[m] }));
+    .map(m => ({ model: m, provider: MODEL_PROVIDER_MAPPING[m], }));
 }
 
 // Generic dropdown for setting the current LLM backend, which updates the main app state through props.modelCallback
@@ -517,9 +533,28 @@ const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, mo
       }
     };
 
+    // Hotkeys for opening/selecting/closing
+    const handleKeyPress = (event: any) => {
+      const numbers = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
+      if (event.key === 'Escape') {
+        setIsOpen(false);
+      } else if (event.ctrlKey && event.key === 'm') {
+        setIsOpen(true);
+      } else if (event.ctrlKey && numbers.includes(event.key)) {
+        const models = filterAvailableModels(props.userConfig);
+        console.log(models);
+        const index = Math.min(parseInt(event.key) - 1, models.length - 1);
+
+        props.modelCallback(models[index]);
+        setIsOpen(false);
+      }
+    };
+
     document.addEventListener('mousedown', handleClickOutside as any);
+    document.addEventListener('keydown', handleKeyPress);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside as any);
+      document.removeEventListener('keydown', handleKeyPress);
     };
   }, []);
 
@@ -529,7 +564,7 @@ const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, mo
       onClick={() => setIsOpen(!isOpen)}
       className="buttonHoverLight"
       style={menuButtonStyle}>
-      {props.model}
+      {MODEL_LABEL_MAPPING[props.model]}
 
       {
         isOpen && (
@@ -548,7 +583,7 @@ const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, mo
                     textWrap: 'nowrap',
                     padding: '0.5rem',
                   }}>
-                  {m.model}
+                  {MODEL_LABEL_MAPPING[m.model]}
                 </div>
               ))
             }
@@ -693,7 +728,7 @@ function getAvailableModel(userConfig: UserConfig | null) {
     // TODO: how do we convince the type system that `filterAvailableModels` returns bonafide API structs
     return availableModels[0] as any;
   } else {
-    return { provider: 'openai', model: 'gpt-4o' };
+    return { provider: 'openai', model: 'gpt-4o', label: 'GPT', };
   }
 }
 
@@ -1504,11 +1539,12 @@ function MainPage() {
                 {isUser ? '' : (
                   <p className="messageOptions" style={{
                     position: 'absolute',
-                    transform: 'translateX(calc(-100% - 1rem))',
+                    transform: 'translateY(calc(-100% - 0.5rem))',
                     userSelect: 'none',
                     cursor: 'pointer',
                     display: 'flex',
                   }}>
+                    <div>•</div>
                     <div style={{
                       width: 'fit-content',
                       overflow: 'hidden',
@@ -1549,7 +1585,6 @@ function MainPage() {
                         }}>Regenerate</div>
                       </div>
                     </div>
-                    <div>•</div>
                   </p>
                 )}
 
