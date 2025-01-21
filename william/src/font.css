@@ -65,12 +65,17 @@ li {
 }
 
 .historyButton {
+    color: #000000;
     background-color: #FFFFFF;
-    transition: background-color 0.15s ease;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    border: 1px solid #EDEFEF;
+    transition: color 0.5s ease;
 }
 
-.historyButton:hover {
-    background-color: #EDEFEF;
+.historyButton:hover ~ .historyButton,
+.historyButton:has(~ .historyButton:hover) {
+    transition-duration: 0.5s;
+    color: #D9DADA;
 }
 
 .slideOut {

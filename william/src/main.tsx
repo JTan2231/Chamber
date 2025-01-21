@@ -903,7 +903,7 @@ function MainPage() {
   useEffect(() => {
     const handleKeyPress = (event: any) => {
       // We don't want to mess with things if the user is digging around outside the chat interface
-      if (selectedModal === 'config') {
+      if (selectedModal !== null) {
         return;
       }
 
@@ -1110,10 +1110,17 @@ function MainPage() {
 
   // Decide which modal to build + return based on the currently selected modal
   const buildHistoryModal = () => {
+    const [searchInput, setSearchInput] = useState<string>('');
+
+    const close = () => {
+      setSelectedModal(null)
+      setSearchInput('');
+    };
+
     const getConversationCallback = (id: number) => {
       return () => {
         setDisplayedTitle(titleDefault());
-        setSelectedModal(null);
+        close();
         sendMessage({
           method: 'Load',
           payload: {
@@ -1123,31 +1130,190 @@ function MainPage() {
       };
     };
 
+
+    // Setup event listeners for typing anywhere -> focusing the input
+    // This is more or less a copy of the listener for the main chat input
+    useEffect(() => {
+      const handleKeyPress = (event: any) => {
+        // We don't want to mess with things if the user is digging around outside the chat interface
+        if (selectedModal !== 'search') {
+          return;
+        }
+
+        if (event.key === 'Escape') {
+          setSelectedModal(null);
+        }
+
+        // List of keys that shouldn't trigger input focus
+        const systemKeys = [
+          8,   // Backspace
+          9,   // Tab
+          18,  // Alt
+          20,  // Caps Lock
+          27,  // Escape
+          33,  // Page Up
+          34,  // Page Down
+          35,  // End
+          36,  // Home
+          37,  // Left Arrow
+          38,  // Up Arrow
+          39,  // Right Arrow
+          40,  // Down Arrow
+          45,  // Insert
+          46,  // Delete
+          112, // F1
+          113, // F2
+          114, // F3
+          115, // F4
+          116, // F5
+          117, // F6
+          118, // F7
+          119, // F8
+          120, // F9
+          121, // F10
+          122, // F11
+          123, // F12
+        ];
+
+        // Don't trigger on system keys or modifier combinations
+        if (
+          systemKeys.includes(event.keyCode) ||
+          (event.ctrlKey && (event.key != 'v' || event.key == 'c')) ||  // copy + paste
+          (event.metaKey && (event.key != 'v' || event.key == 'c')) ||  // copy + paste
+          event.altKey
+        ) {
+          return;
+        }
+
+        // Finally at the point where we want to actually focus the input
+        (document.getElementById('search') as HTMLInputElement).focus();
+      }
+
+      document.addEventListener('keydown', handleKeyPress);
+
+      return () => {
+        document.removeEventListener('keydown', handleKeyPress);
+      };
+    }, [selectedModal, mouseInChat]);
+
+    const headerHeight = 108;
+
     // Build the modal HTML with the listed conversations
     return (
-      <div style={{
-        margin: '0.5rem',
-        display: 'flex',
-        flexWrap: 'wrap',
-        gap: '16px',
-      }}>
-        {conversations.map(c => {
-          return (
-            <div className="historyButton" onClick={getConversationCallback(c.id!)} style={{
-              padding: '0.5rem',
+      <div
+        className="scrollbar"
+        style={{
+          transition: 'all 0.3s',
+          opacity: selectedModal === 'search' ? 0.975 : 0,
+          position: 'fixed',
+          backgroundColor: 'transparent',
+          width: '100vw',
+          height: '100vh',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          overflow: 'hidden auto',
+          borderRadius: '1rem',
+          zIndex: 750,
+        }}
+        onClick={close}
+      >
+        <div
+          style={{
+            display: 'flex',
+            position: 'fixed',
+            width: '100%',
+            height: 'calc(24px + 1rem + 0.5rem)',
+          }}>
+          <div
+            className="buttonHoverLight"
+            style={{
               cursor: 'pointer',
-              userSelect: 'none',
+              padding: '0.25rem',
+              margin: '0.5rem', // 0.5rem to line up with the combination of history selection container and the selections themselves
+              width: '24px',
+              height: '24px',
               borderRadius: '0.5rem',
-              textWrap: 'pretty',
-              width: '128px',
-              height: '128px',
+            }}
+            onClick={close}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+              <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <line x1="6" y1="6" x2="18" y2="18" />
+                <line x1="18" y1="6" x2="6" y2="18" />
+              </g>
+            </svg>
+          </div>
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '0.75rem',
+              transform: 'translateX(-50%)',
+            }}>Chat History</div>
+        </div>
+        { /* Filler to push the search enough down below the header */}
+        <div
+          style={{
+            height: 'calc(24px + 1rem + 0.5rem)',
+            backgroundColor: 'transparent',
+          }}
+        />
+        { /* Height here chosen to fill out the rest of the header height, totalling to `${headerHeight}`px */}
+        <div
+          style={{
+            height: `calc(${headerHeight}px - (24px + 1rem + 0.5rem))`,
+            width: 'fit-content',
+            margin: 'auto',
+          }}
+          onClick={(e: any) => e.stopPropagation()}
+        >
+          <input
+            type="text"
+            placeholder="Search"
+            id="search"
+            value={searchInput}
+            onChange={(e: any) => setSearchInput(e.target.value)}
+            style={{
+              outline: 0,
+              border: '1px solid #EDEFEF',
               boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
-            }}>
-              {formatTitle(c.name)}
-            </div>
-          );
-        })}
+              backgroundColor: '#FFFFFF',
+              padding: '0.5rem',
+              height: '16px',
+              fontSize: '14px',
+              borderRadius: '0.5rem',
+              width: '45vw',
+            }}
+          />
+        </div>
+        <div style={{
+          justifyContent: 'center',
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '16px',
+        }}>
+          {conversations
+            .filter(c => searchInput === '' ||
+              c.name.toLowerCase().includes(searchInput.toLowerCase()))
+            .map(c => {
+              return (
+                <div className="historyButton" onClick={getConversationCallback(c.id!)} style={{
+                  padding: '0.5rem',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  borderRadius: '0.5rem',
+                  textWrap: 'pretty',
+                  width: '128px',
+                  height: '128px',
+                }}>
+                  {formatTitle(c.name)}
+                </div>
+              );
+            })}
+        </div>
       </div>
+
     );
   };
 
@@ -1217,9 +1383,9 @@ function MainPage() {
         top: 0,
         height: '100vh',
         width: '100vw',
-        backgroundColor: 'rgba(236, 240, 255, 0.08)',
-        backdropFilter: triggerCondition ? 'blur(4px)' : 'blur(0px)',
-        WebkitBackdropFilter: triggerCondition ? 'blur(4px)' : 'blur(0px)',
+        backgroundColor: '#0000000A',
+        backdropFilter: triggerCondition ? 'blur(8px)' : 'blur(0px)',
+        WebkitBackdropFilter: triggerCondition ? 'blur(8px)' : 'blur(0px)',
         transition: 'all 0.3s',
         opacity: triggerCondition ? 1 : 0,
         zIndex: 500,
@@ -1274,55 +1440,7 @@ function MainPage() {
           transition: 'all 0.3s',
         }}>
           {buildModalBackdrop(() => setSelectedModal(null), selectedModal === 'search')}
-
-          <div className="scrollbar" style={{
-            transition: 'all 0.3s',
-            opacity: selectedModal === 'search' ? 0.975 : 0,
-            position: 'fixed',
-            backgroundColor: '#FDFEFEEE',
-            width: '85vw',
-            height: '65vh',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            overflow: 'hidden auto',
-            borderRadius: '1rem',
-            zIndex: 750,
-          }}>
-            <div
-              style={{
-                display: 'flex',
-                backgroundColor: '#FDFEFE',
-              }}>
-              <div
-                className="buttonHoverLight"
-                style={{
-                  cursor: 'pointer',
-                  padding: '0.25rem',
-                  margin: '0.5rem', // 0.5rem to line up with the combination of history selection container and the selections themselves
-                  width: '24px',
-                  height: '24px',
-                  borderRadius: '0.5rem',
-                }}
-                onClick={() => setSelectedModal(null)}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-                  <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                  </g>
-                </svg>
-              </div>
-              <div
-                style={{
-                  position: 'absolute',
-                  left: '50%',
-                  top: '0.75rem',
-                  transform: 'translateX(-50%)',
-                }}>Chat History</div>
-            </div>
-            {buildHistoryModal()}
-          </div>
+          {buildHistoryModal()}
         </div>
       </div>
 
@@ -1378,7 +1496,9 @@ function MainPage() {
           maxWidth: '864px',
           minHeight: '16px',
           padding: '12px',
+          border: '1px solid #EDEFEF',
           backgroundColor: '#EDEFEF',
+          boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
           borderRadius: '0.5rem',
           fontSize: '14px',
           overflow: 'hidden',
@@ -1536,10 +1656,14 @@ function MainPage() {
                 position: 'relative',
                 fontSize: '14px',
               }}>
+                {
+                  /* The actual message elements */
+                  unescapedElements
+                }
                 {isUser ? '' : (
                   <p className="messageOptions" style={{
                     position: 'absolute',
-                    transform: 'translateY(calc(-100% - 0.5rem))',
+                    transform: 'translateY(calc(-100% + 0.5rem))',
                     userSelect: 'none',
                     cursor: 'pointer',
                     display: 'flex',
@@ -1587,11 +1711,6 @@ function MainPage() {
                     </div>
                   </p>
                 )}
-
-                {
-                  /* The actual message elements */
-                  unescapedElements
-                }
               </div>
             </>
           );
