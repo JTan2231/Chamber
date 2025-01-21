@@ -39,14 +39,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alfred"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "glob",
-]
-
-[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -286,18 +278,6 @@ name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
-
-[[package]]
-name = "bernard"
-version = "0.1.0"
-dependencies = [
- "chamber-common",
- "chrono",
- "dewey-core",
- "native-tls",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "bit-set"
@@ -2244,13 +2224,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "metatron"
-version = "0.1.0"
-dependencies = [
- "glob",
 ]
 
 [[package]]

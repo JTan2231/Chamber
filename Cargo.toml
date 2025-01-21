@@ -3,9 +3,6 @@ members = [
     "dewey/core",
     "dewey/regression",
     "dewey/serialize_macros",
-    "bernard",
-    "alfred",
-    "metatron",
     "common",
     "william/src-tauri",
 ]
