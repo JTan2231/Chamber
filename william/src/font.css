@@ -66,16 +66,24 @@ li {
 
 .historyButton {
     color: #000000;
-    background-color: #FFFFFF;
+    background-color: #FFFFFFAA;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    border: 1px solid #EDEFEF;
-    transition: color 0.5s ease;
+    text-shadow: 0 0px 4px rgba(255, 255, 255, 1);
+    padding: 0.4rem 0.5rem;
+    transition: all 0.3s ease;
+}
+
+.historyButton:hover {
+    padding: 0.75rem;
+    background-color: #FFFFFFF0;
 }
 
 .historyButton:hover ~ .historyButton,
 .historyButton:has(~ .historyButton:hover) {
-    transition-duration: 0.5s;
-    color: #D9DADA;
+    color: transparent;
+    background-color: #00000003;
+    text-shadow: 0 0px 8px #00000050;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
 }
 
 .slideOut {
@@ -156,11 +164,12 @@ li {
 
 .messageOptionsRow {
     color: #ADADAD;
-    transition: color 0.3s ease;
+    transition: all 0.3s ease;
 }
 
 .messageOptionsRow:hover {
     color: #0D0D0D;
+    text-shadow: 0 0 8px #00000060;
 }
 
 .messageOptions .messageOptionsRow {

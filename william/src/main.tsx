@@ -1291,7 +1291,6 @@ function MainPage() {
           justifyContent: 'center',
           display: 'flex',
           flexWrap: 'wrap',
-          gap: '16px',
         }}>
           {conversations
             .filter(c => searchInput === '' ||
@@ -1299,13 +1298,13 @@ function MainPage() {
             .map(c => {
               return (
                 <div className="historyButton" onClick={getConversationCallback(c.id!)} style={{
-                  padding: '0.5rem',
                   cursor: 'pointer',
                   userSelect: 'none',
                   borderRadius: '0.5rem',
                   textWrap: 'pretty',
-                  width: '128px',
-                  height: '128px',
+                  marginLeft: '16px',
+                  width: '60%',
+                  height: 'fit-content',
                 }}>
                   {formatTitle(c.name)}
                 </div>
@@ -1376,6 +1375,7 @@ function MainPage() {
   // Creates a blurred backdrop to be placed behind a modal
   // Covers the entire screen and assumes click priority over everything else behind the modal
   const buildModalBackdrop = (onClickCallback: any, triggerCondition: boolean) => {
+    const blur = 16;
     return (
       <div style={{
         position: 'fixed',
@@ -1384,8 +1384,8 @@ function MainPage() {
         height: '100vh',
         width: '100vw',
         backgroundColor: '#0000000A',
-        backdropFilter: triggerCondition ? 'blur(8px)' : 'blur(0px)',
-        WebkitBackdropFilter: triggerCondition ? 'blur(8px)' : 'blur(0px)',
+        backdropFilter: triggerCondition ? `blur(${blur}px)` : 'blur(0px)',
+        WebkitBackdropFilter: triggerCondition ? `blur(${blur}px)` : 'blur(0px)',
         transition: 'all 0.3s',
         opacity: triggerCondition ? 1 : 0,
         zIndex: 500,
@@ -1503,7 +1503,7 @@ function MainPage() {
           fontSize: '14px',
           overflow: 'hidden',
           display: 'flex',
-          zIndex: 3,
+          zIndex: selectedModal !== null ? 0 : 3,
         }}
       >
         <div style={{
