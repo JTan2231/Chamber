@@ -1281,8 +1281,8 @@ function MainPage() {
               backgroundColor: '#FFFFFF',
               padding: '0.5rem',
               height: '16px',
-              fontSize: '14px',
               borderRadius: '0.5rem',
+              fontSize: '14px',
               width: '45vw',
             }}
           />

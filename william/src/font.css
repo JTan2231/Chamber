@@ -75,15 +75,33 @@ li {
 
 .historyButton:hover {
     padding: 0.75rem;
+    font-size: 16px;
     background-color: #FFFFFFF0;
 }
 
 .historyButton:hover ~ .historyButton,
 .historyButton:has(~ .historyButton:hover) {
     color: transparent;
-    background-color: #00000003;
+    background-color: #00000010;
     text-shadow: 0 0px 8px #00000050;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+.historyButton:hover + .historyButton,
+.historyButton:has(+ .historyButton:hover) {
+    color: transparent;
+    background-color: #FFFFFFA0;
+    text-shadow: 0 0px 3px #000000F0;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+    font-size: 15px;
+}
+
+.historyButton:hover + .historyButton + .historyButton,
+.historyButton:has(+ .historyButton + .historyButton:hover) {
+    color: transparent;
+    background-color: #00000001;
+    text-shadow: 0 0px 6px #000000F0;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.13);
 }
 
 .slideOut {
