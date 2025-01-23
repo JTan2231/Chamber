@@ -28,7 +28,7 @@ macro_rules! ws_send {
 //       Use a pattern more akin to `serialize_response!` (e.g., panicking) if you need something
 //       else
 macro_rules! ws_error {
-    ($ws:expr, $error_type:expr, $error_message:expr, $e:expr) => {
+    ($ws:expr, $error_type:expr, $error_message:expr, $e:expr, $request_id:expr) => {
         let message = format!("{}: {}", $error_message, $e);
         lprint!(error, "{}", message);
         let response = serialize_response!(
@@ -36,7 +36,8 @@ macro_rules! ws_error {
             WilliamError {
                 error_type: format!("{}", $error_type), // TODO: what do we put here?
                 message
-            }
+            },
+            $request_id
         );
 
         ws_send!($ws, response);
@@ -44,9 +45,10 @@ macro_rules! ws_error {
 }
 
 macro_rules! serialize_response {
-    ($payload_type:ident, $payload:expr) => {
-        match serde_json::to_string(&ArrakisResponse {
-            payload: ResponsePayload::$payload_type($payload),
+    ($payload_type:ident, $payload:expr, $request_id:expr) => {
+        match serde_json::to_string(&ArrakisResponse::$payload_type {
+            id: $request_id,
+            payload: $payload,
         }) {
             Ok(r) => r,
             Err(e) => {
@@ -456,6 +458,7 @@ fn generate_name(conversation: &mut Conversation) {
 //       a placeholder to be filled here for the Assistant
 fn completion(
     websocket: &mut tungstenite::WebSocket<std::net::TcpStream>,
+    request_id: &str,
     mut conversation: Conversation,
     tokenizer: Option<&tiktoken::Tokenizer>,
     db: &rusqlite::Connection,
@@ -483,9 +486,9 @@ fn completion(
         .to_string_lossy()
         .to_string();
 
-    // TODO: error handling
     // TODO: system prompt building needs to be more fleshed out
     //       like, minimum sized system prompts?
+    //       System prompt details should also be configurable
     std::fs::write(&filepath, last_user_message.content.clone()).unwrap();
     let dewey_sources = if let Some(d) = dewey.as_mut() {
         match d.query(&filepath, Vec::new(), 10) {
@@ -541,7 +544,7 @@ fn completion(
 
                 // -2 to skip the last message, which is being filled by the active completion, and
                 // get the last user message
-                let request_id = conversation.messages[conversation.messages.len() - 2]
+                let request_message_id = conversation.messages[conversation.messages.len() - 2]
                     .id
                     .unwrap();
 
@@ -564,9 +567,10 @@ fn completion(
                             delta: message,
                             name: conversation_name,
                             conversation_id,
-                            request_id,
+                            request_id: request_message_id,
                             response_id,
-                        }
+                        },
+                        request_id.to_string()
                     )
                 );
             }
@@ -576,8 +580,8 @@ fn completion(
                 lprint!(info, "Assuming stream completed... ({})", e);
 
                 // Weird one-off response serialization
-                let response = match serde_json::to_string(&ArrakisResponse {
-                    payload: ResponsePayload::CompletionEnd,
+                let response = match serde_json::to_string(&ArrakisResponse::CompletionEnd {
+                    id: request_id.to_string(),
                 }) {
                     Ok(r) => r,
                     Err(e) => {
@@ -597,7 +601,8 @@ fn completion(
                             websocket,
                             "Completion",
                             "Error upserting conversation in DB",
-                            e
+                            e,
+                            request_id.to_string()
                         );
                     }
                 };
@@ -630,7 +635,8 @@ fn completion(
             std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Error receiving completion delta"
-            )
+            ),
+            request_id.to_string()
         );
     }
 }
@@ -700,6 +706,59 @@ fn get_conversation(conversation_id: i64, db: &rusqlite::Connection) -> Conversa
     }
 
     conversation
+}
+
+// Fetch the first message of a conversation from SQLite with a given ID
+fn get_first_message(conversation_id: i64, db: &rusqlite::Connection) -> Message {
+    let mut query = db
+        .prepare(
+            "
+            SELECT
+                m.id as message_id,
+                m.message_type_id,
+                m.content,
+                api.provider,
+                api.name,
+                m.system_prompt,
+                l.sequence
+            FROM conversations c
+            JOIN paths l ON c.id = l.conversation_id
+            JOIN messages m ON l.message_id = m.id
+            JOIN models api ON m.api_config_id = api.id
+            WHERE c.id = ?1
+            ORDER BY l.sequence ASC
+            LIMIT 1
+            ",
+        )
+        .unwrap();
+
+    let mut rows = query
+        .query_map([conversation_id], |row| {
+            let provider = row.get::<_, String>("provider")?;
+            let model_name = row.get::<_, String>("name")?;
+            let api = API::from_strings(&provider, &model_name)
+                .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+
+            Ok(Message {
+                id: Some(row.get::<_, i64>("message_id")?),
+                message_type: MessageType::from_id(row.get::<_, i64>("message_type_id")?).unwrap(),
+                content: row.get::<_, String>("content")?,
+                api,
+                system_prompt: row.get::<_, String>("system_prompt")?,
+                sequence: row.get::<_, i32>("sequence")?,
+            })
+        })
+        .unwrap();
+
+    // Retrieve the first (and only) message from the iterator
+    if let Some(result) = rows.next() {
+        match result {
+            Ok(message) => message,
+            Err(_) => panic!("TODO: error handling"),
+        }
+    } else {
+        panic!("TODO: error handling");
+    }
 }
 
 // Get the user config, or the prepared defaults
@@ -861,9 +920,10 @@ async fn websocket_server() {
                 match request {
                     // Triggers on a chat message submission, as well as a fork
                     // (after backend processing)
-                    ArrakisRequest::Completion { payload } => {
+                    ArrakisRequest::Completion { id, payload } => {
                         completion(
                             &mut websocket,
+                            &id,
                             payload,
                             tokenizer.lock().unwrap().as_ref(),
                             &db.lock().unwrap(),
@@ -871,19 +931,20 @@ async fn websocket_server() {
                         );
                     }
                     // TODO: Not sure how necessary this is
-                    ArrakisRequest::Ping { payload: _ } => {
+                    ArrakisRequest::Ping { id, payload: _ } => {
                         ws_send!(
                             websocket,
                             serialize_response!(
                                 Ping,
                                 Ping {
                                     body: "pong".to_string(),
-                                }
+                                },
+                                id
                             )
                         );
                     }
                     // Retrieve a list of saved conversation IDs
-                    ArrakisRequest::ConversationList => {
+                    ArrakisRequest::ConversationList { id } => {
                         let db = db.lock().unwrap();
                         let mut query = db
                             .prepare(
@@ -909,7 +970,8 @@ async fn websocket_server() {
                                     websocket,
                                     "ConversationList",
                                     "Error fetching conversation IDs",
-                                    e
+                                    e,
+                                    id.to_string()
                                 );
                                 continue;
                             }
@@ -921,22 +983,31 @@ async fn websocket_server() {
                             websocket,
                             serialize_response!(
                                 ConversationList,
-                                ConversationList { conversations }
+                                ConversationList { conversations },
+                                id
                             )
                         );
                     }
                     // Fetch a conversation from its ID
-                    ArrakisRequest::Load { payload } => {
+                    ArrakisRequest::Load { id, payload } => {
                         ws_send!(
                             websocket,
                             serialize_response!(
                                 Load,
-                                get_conversation(payload.id, &db.lock().unwrap()).into()
+                                get_conversation(payload.id, &db.lock().unwrap()).into(),
+                                id
                             )
                         );
                     }
+                    // Fetch the first message of a conversation from its conversation ID
+                    ArrakisRequest::Preview { id, mut payload } => {
+                        let message =
+                            get_first_message(payload.conversation_id, &db.lock().unwrap());
+                        payload.content = message.content;
+                        ws_send!(websocket, serialize_response!(Preview, payload, id));
+                    }
                     // Read or write to the saved system prompt, depending on the request
-                    ArrakisRequest::SystemPrompt { payload } => {
+                    ArrakisRequest::SystemPrompt { id, payload } => {
                         let path = get_config_dir().join("system_prompt");
 
                         if payload.write {
@@ -953,7 +1024,8 @@ async fn websocket_server() {
                                         websocket,
                                         "SystemPrompt",
                                         "Error saving system prompt",
-                                        e
+                                        e,
+                                        id.to_string()
                                     );
                                     continue;
                                 }
@@ -969,7 +1041,8 @@ async fn websocket_server() {
                                     websocket,
                                     "SystemPrompt",
                                     "error reading system prompt file {}: {}",
-                                    e
+                                    e,
+                                    id.to_string()
                                 );
                                 continue;
                             }
@@ -982,7 +1055,8 @@ async fn websocket_server() {
                                 SystemPrompt {
                                     write: false,
                                     content,
-                                }
+                                },
+                                id
                             )
                         );
                     }
@@ -994,7 +1068,7 @@ async fn websocket_server() {
                     //       when there's a communication failure quickly leads to a cluttering of the
                     //       conversation history. They also need renamed based on the conversation
                     //       redirection
-                    ArrakisRequest::Fork { payload } => {
+                    ArrakisRequest::Fork { id, payload } => {
                         let db = db.lock().unwrap();
 
                         let mut conversation = get_conversation(payload.conversation_id, &db);
@@ -1031,20 +1105,27 @@ async fn websocket_server() {
                         match db.execute(fork_query, params![payload.conversation_id, new_id]) {
                             Ok(_) => {}
                             Err(e) => {
-                                ws_error!(websocket, "Fork", "Error adding fork to DB", e);
+                                ws_error!(
+                                    websocket,
+                                    "Fork",
+                                    "Error adding fork to DB",
+                                    e,
+                                    id.to_string()
+                                );
                                 continue;
                             }
                         };
 
                         completion(
                             &mut websocket,
+                            &id,
                             conversation,
                             tokenizer.lock().unwrap().as_ref(),
                             &db,
                             dewey.lock().unwrap().as_mut(),
                         )
                     }
-                    ArrakisRequest::Config { payload } => {
+                    ArrakisRequest::Config { id, payload } => {
                         println!("Received Config request");
 
                         let db = db.lock().unwrap();
@@ -1074,15 +1155,21 @@ async fn websocket_server() {
                             ]) {
                                 Ok(_) => {}
                                 Err(e) => {
-                                    ws_error!(websocket, "Config", "Error updating user config", e);
+                                    ws_error!(
+                                        websocket,
+                                        "Config",
+                                        "Error updating user config",
+                                        e,
+                                        id.to_string()
+                                    );
                                     continue;
                                 }
                             };
                         } else {
-                            ws_send!(websocket, serialize_response!(Config, config));
+                            ws_send!(websocket, serialize_response!(Config, config, id));
                         }
                     }
-                    ArrakisRequest::WilliamError { payload: _ } => {
+                    ArrakisRequest::WilliamError { id: _, payload: _ } => {
                         // There shouldn't be any requests for this type
                     }
                 };

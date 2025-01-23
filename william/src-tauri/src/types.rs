@@ -295,6 +295,13 @@ pub struct UserConfig {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Preview {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: i64,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum RequestPayload {
     Ping(Ping),
@@ -304,6 +311,7 @@ pub enum RequestPayload {
     SystemPrompt(SystemPrompt),
     Fork(Fork),
     Config(UserConfig),
+    Preview(Preview),
 }
 
 /// Request in JSON form looks like
@@ -340,18 +348,45 @@ pub enum RequestPayload {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "method")]
 pub enum ArrakisRequest {
-    Ping { payload: Ping },
-    Completion { payload: Conversation },
-    ConversationList,
-    Load { payload: LoadConversation },
-    SystemPrompt { payload: SystemPrompt },
-    Fork { payload: Fork },
-    Config { payload: UserConfig },
-    WilliamError { payload: WilliamError },
+    Ping {
+        id: String,
+        payload: Ping,
+    },
+    Completion {
+        id: String,
+        payload: Conversation,
+    },
+    ConversationList {
+        id: String,
+    },
+    Load {
+        id: String,
+        payload: LoadConversation,
+    },
+    SystemPrompt {
+        id: String,
+        payload: SystemPrompt,
+    },
+    Fork {
+        id: String,
+        payload: Fork,
+    },
+    Config {
+        id: String,
+        payload: UserConfig,
+    },
+    WilliamError {
+        id: String,
+        payload: WilliamError,
+    },
+    Preview {
+        id: String,
+        payload: Preview,
+    },
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "method")]
+#[serde(untagged)]
 pub enum ResponsePayload {
     Ping(Ping),
     Completion(Completion),
@@ -361,6 +396,7 @@ pub enum ResponsePayload {
     SystemPrompt(SystemPrompt),
     Config(UserConfig),
     WilliamError(WilliamError),
+    Preview(Preview),
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -383,8 +419,43 @@ pub struct Completion {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct ArrakisResponse {
-    pub payload: ResponsePayload,
+#[serde(tag = "method")]
+pub enum ArrakisResponse {
+    Ping {
+        id: String,
+        payload: Ping,
+    },
+    Completion {
+        id: String,
+        payload: Completion,
+    },
+    CompletionEnd {
+        id: String,
+    },
+    ConversationList {
+        id: String,
+        payload: ConversationList,
+    },
+    Load {
+        id: String,
+        payload: Conversation,
+    },
+    SystemPrompt {
+        id: String,
+        payload: SystemPrompt,
+    },
+    Config {
+        id: String,
+        payload: UserConfig,
+    },
+    WilliamError {
+        id: String,
+        payload: WilliamError,
+    },
+    Preview {
+        id: String,
+        payload: Preview,
+    },
 }
 
 // search.rs (for Dewey-related structures)

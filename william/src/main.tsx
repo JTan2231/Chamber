@@ -128,6 +128,13 @@ const ForkRequestSchema = z.object({
   sequence: z.number(),
 });
 
+const PreviewRequestSchema = z.object({
+  conversationId: z.number().int(),
+  content: z.string()
+});
+
+const PreviewResponseSchema = PreviewRequestSchema;
+
 const CompletionResponseSchema = z.object({
   stream: z.boolean(),
   delta: z.string(),
@@ -153,55 +160,82 @@ const ConversationListResponseSchema = z.object({
 const ArrakisRequestSchema = z.discriminatedUnion("method", [
   z.object({
     method: z.literal("ConversationList"),
+    id: z.string().optional(),
   }),
   z.object({
     method: z.literal("Ping"),
+    id: z.string().optional(),
     payload: PingRequestSchema,
   }),
   z.object({
     method: z.literal("Completion"),
+    id: z.string().optional(),
     payload: CompletionRequestSchema,
   }),
   z.object({
     method: z.literal("Load"),
+    id: z.string().optional(),
     payload: LoadRequestSchema,
   }),
   z.object({
     method: z.literal("Config"),
+    id: z.string().optional(),
     payload: UserConfigRequestSchema,
   }),
   z.object({
     method: z.literal("Fork"),
+    id: z.string().optional(),
     payload: ForkRequestSchema,
+  }),
+  z.object({
+    method: z.literal("Preview"),
+    id: z.string().optional(),
+    payload: PreviewRequestSchema,
   }),
 ]);
 
 const ArrakisResponseSchema = z.discriminatedUnion("method", [
   z.object({
     method: z.literal("ConversationList"),
+    id: z.string(),
     payload: ConversationListResponseSchema,
   }),
   z.object({
+    method: z.literal("Load"),
+    id: z.string(),
+    payload: ConversationSchema,
+  }),
+  z.object({
     method: z.literal("Ping"),
+    id: z.string(),
     payload: PingResponseSchema,
   }),
   z.object({
     method: z.literal("Completion"),
+    id: z.string(),
     payload: CompletionResponseSchema,
   }),
   z.object({
     method: z.literal("Config"),
+    id: z.string(),
     payload: UserConfigResponseSchema,
   }),
   z.object({
     method: z.literal("WilliamError"),
+    id: z.string(),
     payload: ErrorResponseSchema,
+  }),
+  z.object({
+    method: z.literal("Preview"),
+    id: z.string(),
+    payload: PreviewResponseSchema,
   }),
 ]);
 
 type API = z.infer<typeof APISchema>;
 type Message = z.infer<typeof MessageSchema>;
 type Conversation = z.infer<typeof ConversationSchema>;
+type Preview = z.infer<typeof PreviewRequestSchema>;
 type ApiKeys = z.infer<typeof ApiKeysSchema>;
 type UserConfig = z.infer<typeof UserConfigRequestSchema>;
 type UserConfigRequest = z.infer<typeof UserConfigRequestSchema>;
@@ -294,6 +328,23 @@ const useWebSocket = ({
   const [error, setError] = useState<Error | null>(null);
   const [retryCount, setRetryCount] = useState(0);
 
+  // A list of outstanding callbacks for outstanding requests
+  // Each request going out has a callback associated under the assumption that
+  // something will happen with the acquired data from the response
+  //
+  // TODO: There will need to be some refactoring to account for this addition
+  const callbacks = useRef<{ [key: string]: (response: ArrakisResponse) => void }>({});
+
+  // This consumes the callback associated with the given response
+  // (if there is any to begin with)
+  // If there isn't an associated callback, this function passes through silently
+  const useResponseCallback = (response: ArrakisResponse) => {
+    if (callbacks.current[response.id]) {
+      callbacks.current[response.id](response);
+      delete callbacks.current[response.id];
+    }
+  };
+
   const connect = useCallback(() => {
     try {
       const ws = new WebSocket(url);
@@ -307,13 +358,12 @@ const useWebSocket = ({
       // This is a sorry excuse for a REST-ish API
       // I feel like there's a much better way of structuring the "endpoints" supported by both the front + back ends
       //
-      // TODO: The response structure doesn't match the request structure
-      //       with the { method: string, payload: {...} }
-      //       It's currently { method: string, ...payload }
+      // TODO: Refactor because this is gross
+      //       Also to use the new callback system
       ws.onmessage = (event) => {
         try {
-          const response = JSON.parse(event.data) satisfies ArrakisResponse;
-          if (response.payload.method === 'Completion') {
+          const response = ArrakisResponseSchema.parse(JSON.parse(event.data));
+          if (response.method === 'Completion') {
             setLoadedConversation(prev => {
               const completion = CompletionResponseSchema.parse(response.payload);
 
@@ -329,20 +379,22 @@ const useWebSocket = ({
 
               return { id: completion.conversationId, name: completion.name, messages: newMessages };
             });
-          } else if (response.payload.method === 'Ping' && connectionStatus !== 'connected') {
+          } else if (response.method === 'Ping' && connectionStatus !== 'connected') {
             setConnectionStatus('connected');
-          } else if (response.payload.method === 'ConversationList') {
+          } else if (response.method === 'ConversationList') {
             const conversationList = ConversationListResponseSchema.parse(response.payload);
             setConversations(conversationList.conversations);
-          } else if (response.payload.method === 'Load') {
+          } else if (response.method === 'Load') {
             const conversation = ConversationSchema.parse(response.payload);
             setLoadedConversation(conversation);
-          } else if (response.payload.method === 'Config') {
+          } else if (response.method === 'Config') {
             const payload = UserConfigResponseSchema.parse(response.payload);
             setUserConfig(payload);
-          } else if (response.payload.method === 'WilliamError') {
+          } else if (response.method === 'WilliamError') {
             const payload = ErrorResponseSchema.parse(response.payload);
             setError(new Error(payload.message));
+          } else if (response.method === 'Preview') {
+            useResponseCallback(response);
           }
         } catch (error) {
           console.log(error);
@@ -374,8 +426,17 @@ const useWebSocket = ({
 
   // Generic message sending function for the backend
   // Ideally, _all_ messages going to the backend will be an ArrakisRequest
-  const sendMessage = useCallback((message: ArrakisRequest) => {
+  //
+  // IDs are assigned here and managed through solely within this socket hook
+  // TODO: Probably a refactor to ensure they can't be tampered with outside this hook
+  const sendMessage = useCallback((message: ArrakisRequest, callback?: (response: ArrakisResponse) => void) => {
     if (socket?.readyState === WebSocket.OPEN) {
+      message.id = crypto.randomUUID();
+
+      if (callback) {
+        callbacks.current[message.id] = callback;
+      }
+
       socket.send(typeof message === 'string' ? message : JSON.stringify(message));
     } else {
       console.error('WebSocket is not connected');
@@ -463,6 +524,7 @@ const escapeFromHTML: Record<string, string> = Object.entries(escapeToHTML).redu
 //
 // TODO: These are commented out because I haven't figured out a smarter scheme for mapping models to names
 const MODEL_PROVIDER_MAPPING: Record<string, string> = {
+  // "notepad": "notepad",
   "gpt-4o": "openai",
   // "gpt-4o-mini": "openai",
   "o1-preview": "openai",
@@ -477,6 +539,7 @@ const MODEL_PROVIDER_MAPPING: Record<string, string> = {
 
 // TODO: This needs to be better + more robust
 const MODEL_LABEL_MAPPING: Record<string, string> = {
+  // "notepad": "Notepad",
   "gpt-4o": "GPT",
   // "gpt-4o-mini": "openai",
   "o1-preview": "GPT (smarter)",
@@ -512,6 +575,7 @@ function filterAvailableModels(userConfig: UserConfig | null) {
         (provider === 'groq' && userConfig?.apiKeys.groq === ''));
     })
     .map(m => ({ model: m, provider: MODEL_PROVIDER_MAPPING[m], }));
+  // .concat([{ model: 'notepad', provider: '', }]);
 }
 
 // Generic dropdown for setting the current LLM backend, which updates the main app state through props.modelCallback
@@ -542,7 +606,6 @@ const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, mo
         setIsOpen(true);
       } else if (event.ctrlKey && numbers.includes(event.key)) {
         const models = filterAvailableModels(props.userConfig);
-        console.log(models);
         const index = Math.min(parseInt(event.key) - 1, models.length - 1);
 
         props.modelCallback(models[index]);
@@ -785,6 +848,128 @@ function ConnectionStatus(props: { error: Error | null, connectionStatus: string
     </>
   );
 }
+
+const ConversationHistoryElement = (props: {
+  name: string,
+  id: number | null,
+  // Callback to load the conversation to the chat when this element is selected
+  getLoadConversationCallback: any,
+  // Our hook into the existing websocket connection
+  sendMessage: any,
+}) => {
+  const [mousePosition, setMousePosition] = useState<number[]>([0, 0]);
+  const [mouseIn, setMouseIn] = useState<boolean>(false);
+  const [targetText, setTargetText] = useState<string>('');
+  const [displayedText, setDisplayedText] = useState<string>('');
+
+  // Use refs for intervalId and currentIndex
+  const intervalIdRef = useRef<number | null>(null);
+  const currentIndexRef = useRef<number>(0);
+
+  useEffect(() => {
+    // Clear any existing interval before starting a new one
+    if (intervalIdRef.current !== null) {
+      clearInterval(intervalIdRef.current);
+    }
+
+    // Reset current index and displayed text when targetText changes
+    currentIndexRef.current = 0;
+    setDisplayedText(targetText ? targetText[0] : '');
+
+    const updateText = () => {
+      if (currentIndexRef.current >= Math.min(100, targetText.length - 1)) {
+        // Clear the interval when done
+        if (intervalIdRef.current !== null) {
+          clearInterval(intervalIdRef.current);
+          intervalIdRef.current = null;
+        }
+
+        if (targetText.length > 100) {
+          setDisplayedText((prev) => prev + '...');
+        }
+
+        return;
+      }
+
+      setDisplayedText((prev) => prev + targetText[currentIndexRef.current]);
+      currentIndexRef.current++;
+    };
+
+    // Set up the interval
+    intervalIdRef.current = window.setInterval(updateText, 10);
+
+    // Clean up on unmount or when dependencies change
+    return () => {
+      if (intervalIdRef.current !== null) {
+        clearInterval(intervalIdRef.current);
+        intervalIdRef.current = null;
+      }
+    };
+  }, [targetText, mouseIn]);
+
+  const padding = 5;
+
+  return (
+    <>
+      <div
+        className="historyButton historyButtonModal"
+        style={{
+          pointerEvents: 'none',
+          position: 'fixed',
+          left: `${mousePosition[0]}px`,
+          top: `${mousePosition[1]}px`,
+          transition: 'opacity 0.5s',
+          opacity: mouseIn ? 1 : 0,
+          fontSize: '14px',
+          backgroundColor: '#F8F9F9',
+          borderRadius: '5px',
+          padding: `${padding}px`,
+          maxWidth: '234px',
+        }}
+      >{displayedText}</div>
+      <div
+        className="historyButton"
+        style={{
+          width: '60%',
+          height: 'fit-content',
+          cursor: 'pointer',
+          userSelect: 'none',
+          borderRadius: '0.5rem',
+          textWrap: 'pretty',
+          marginLeft: '16px',
+        }}
+        onMouseEnter={() => {
+          setMouseIn(true);
+          props.sendMessage(
+            ArrakisRequestSchema.parse({
+              method: 'Preview',
+              payload: PreviewRequestSchema.parse({
+                conversationId: props.id!,
+                content: '',
+              })
+            }),
+            (response: ArrakisResponse) => {
+              const payload = PreviewResponseSchema.parse(response.payload);
+              console.log("CHECK", payload);
+              setTargetText(payload.content);
+              setDisplayedText('');
+            });
+        }}
+        onMouseLeave={() => {
+          setMouseIn(false);
+          setTargetText('');
+          setDisplayedText('');
+        }}
+        onMouseMove={(e: React.MouseEvent<HTMLDivElement>) => setMousePosition([e.clientX + padding, e.clientY + padding])}
+      >
+        <div onClick={props.getLoadConversationCallback(props.id!)}>
+          {formatTitle(props.name)}
+        </div>
+      </div>
+    </>
+  );
+};
+
 
 function MainPage() {
   const {
@@ -1108,6 +1293,19 @@ function MainPage() {
     } satisfies ArrakisRequest);
   }, [selectedModal]);
 
+  const getConversationCallback = (id: number) => {
+    return () => {
+      setDisplayedTitle(titleDefault());
+      close();
+      sendMessage({
+        method: 'Load',
+        payload: {
+          id,
+        } satisfies LoadRequest
+      } satisfies ArrakisRequest);
+    };
+  };
+
   // Decide which modal to build + return based on the currently selected modal
   const buildHistoryModal = () => {
     const [searchInput, setSearchInput] = useState<string>('');
@@ -1116,20 +1314,6 @@ function MainPage() {
       setSelectedModal(null)
       setSearchInput('');
     };
-
-    const getConversationCallback = (id: number) => {
-      return () => {
-        setDisplayedTitle(titleDefault());
-        close();
-        sendMessage({
-          method: 'Load',
-          payload: {
-            id,
-          } satisfies LoadRequest
-        } satisfies ArrakisRequest);
-      };
-    };
-
 
     // Setup event listeners for typing anywhere -> focusing the input
     // This is more or less a copy of the listener for the main chat input
@@ -1295,21 +1479,14 @@ function MainPage() {
           {conversations
             .filter(c => searchInput === '' ||
               c.name.toLowerCase().includes(searchInput.toLowerCase()))
-            .map(c => {
-              return (
-                <div className="historyButton" onClick={getConversationCallback(c.id!)} style={{
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                  borderRadius: '0.5rem',
-                  textWrap: 'pretty',
-                  marginLeft: '16px',
-                  width: '60%',
-                  height: 'fit-content',
-                }}>
-                  {formatTitle(c.name)}
-                </div>
-              );
-            })}
+            .map(c => (
+              <ConversationHistoryElement
+                key={c.id}
+                name={c.name}
+                id={c.id}
+                getLoadConversationCallback={getConversationCallback}
+                sendMessage={sendMessage} />
+            ))}
         </div>
       </div>
 
