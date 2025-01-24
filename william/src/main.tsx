@@ -235,7 +235,6 @@ const ArrakisResponseSchema = z.discriminatedUnion("method", [
 type API = z.infer<typeof APISchema>;
 type Message = z.infer<typeof MessageSchema>;
 type Conversation = z.infer<typeof ConversationSchema>;
-type Preview = z.infer<typeof PreviewRequestSchema>;
 type ApiKeys = z.infer<typeof ApiKeysSchema>;
 type UserConfig = z.infer<typeof UserConfigRequestSchema>;
 type UserConfigRequest = z.infer<typeof UserConfigRequestSchema>;
@@ -575,7 +574,6 @@ function filterAvailableModels(userConfig: UserConfig | null) {
         (provider === 'groq' && userConfig?.apiKeys.groq === ''));
     })
     .map(m => ({ model: m, provider: MODEL_PROVIDER_MAPPING[m], }));
-  // .concat([{ model: 'notepad', provider: '', }]);
 }
 
 // Generic dropdown for setting the current LLM backend, which updates the main app state through props.modelCallback
