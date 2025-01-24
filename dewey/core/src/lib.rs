@@ -40,8 +40,14 @@ impl Dewey {
             ));
         }
 
+        // We're rebuilding the index from the blocks for now because it's assumed that the number
+        // of messages will be small enough to warrant this
+        // More than a few blocks, however. will probably warrant some sort of process for building
+        // these in the background
+        //
+        // TODO: Figure something out to keep the index fresh without compromising performance
         Ok(Self {
-            index: HNSW::new(false)?,
+            index: HNSW::new(true)?,
             cache: EmbeddingCache::new((20 * BLOCK_SIZE) as u32)?,
         })
     }
@@ -65,7 +71,7 @@ impl Dewey {
             }
         };
 
-        info!("embedding created");
+        lprint!(info, "Dewey: Query embedding created");
 
         let filters = filters
             .iter()

@@ -5,7 +5,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::io::{Read, Write};
 
 use chamber_common::Logger;
-use chamber_common::{error, get_data_dir, info};
+use chamber_common::{error, get_data_dir, info, lprint};
 use serialize_macros::Serialize;
 
 use crate::cache::EmbeddingCache;
@@ -14,9 +14,14 @@ use crate::openai::{Embedding, EMBED_DIM};
 use crate::serialization::Serialize;
 
 pub fn dot(a: &Embedding, b: &Embedding) -> f32 {
-    let mut sum = 0.;
-    for i in 0..EMBED_DIM {
-        sum += a.data[i] * b.data[i];
+    let mut sum = 0.0;
+    let mut i = 0;
+    while i < EMBED_DIM {
+        sum += a.data[i] * b.data[i]
+            + a.data[i + 1] * b.data[i + 1]
+            + a.data[i + 2] * b.data[i + 2]
+            + a.data[i + 3] * b.data[i + 3];
+        i += 4;
     }
 
     sum
@@ -103,10 +108,14 @@ pub struct HNSW {
     thresholds: Vec<f32>,
 }
 
+// NOTE: A few guarantees to note:
+//       - The bottom layer must have _all_ registered nodes, regardless of probability
+//       - The entry node must be present in _all_ layers
+
 impl HNSW {
     pub fn new(reindex: bool) -> Result<Self, std::io::Error> {
         if !reindex {
-            info!("loading index from disk");
+            lprint!(info, "Dewey: HNSW: loading index from disk");
             let hnsw =
                 match Self::deserialize(get_data_dir().join("index").to_string_lossy().to_string())
                 {
@@ -128,7 +137,7 @@ impl HNSW {
             return Ok(hnsw);
         }
 
-        info!("building index from block files");
+        lprint!(info, "Dewey: HNSW: building index from block files");
 
         let directory = get_directory()?;
         let n = directory.len();
@@ -150,10 +159,17 @@ impl HNSW {
             n, m, l, p
         );
 
-        let thresholds = (0..l)
+        let thresholds = (1..l)
             .map(|j| p * (1.0 - p).powi((j as i32 - l as i32 + 1).abs()))
+            .chain(vec![1.0].into_iter())
             .rev()
             .collect::<Vec<_>>();
+
+        lprint!(
+            info,
+            "Dewey: Building HNSW with thresholds: {:?}",
+            thresholds
+        );
 
         // TODO: config param?
         let mut cache = EmbeddingCache::new(20 * BLOCK_SIZE as u32)?;
@@ -161,25 +177,56 @@ impl HNSW {
         let mut entry_id: Option<u64> = None;
         let mut rng = thread_rng();
         let mut layers = vec![HashMap::new(); l as usize];
+
+        // Iterating through all recorded embeddings and inserting them into different layers,
+        // depending on rng
+        //
+        // NOTE: _Every_ embedding must be in some layer.
+        //       This is copied + pasted from `fn insert` because I'm not too bright
         for (id, _) in directory.id_map.iter() {
             let prob = rng.gen::<f32>();
             let new_embedding = cache.get(*id as u32)?;
-            for j in 0..l {
-                let j = j as usize;
-                if prob < thresholds[j] || entry_id.is_none() {
-                    let eid = if entry_id.is_none() {
-                        Some(new_embedding.id)
-                    } else {
-                        entry_id
-                    };
 
+            // If the node is lucky enough to be inserted in one of the upper layers, it is guaranteed
+            // a spot in the lower layers through this variable
+            let mut carryover = None;
+            for (j, layer) in layers.iter_mut().enumerate().rev() {
+                let eid = if entry_id.is_none() {
+                    Some(new_embedding.id)
+                } else {
+                    entry_id
+                };
+
+                // The index entry id _must_ be present in the index
+                if layer.get(&eid.unwrap()).is_none() {
+                    let eid_embedding = *cache.get(eid.unwrap() as u32)?;
                     HNSW::insert_into_layer(
                         &mut cache,
                         eid.unwrap(),
-                        &mut layers[j],
+                        layer,
+                        &eid_embedding,
+                        200, // TODO: ????
+                    )?;
+                }
+
+                if carryover.is_some() {
+                    HNSW::insert_into_layer(
+                        &mut cache,
+                        eid.unwrap(),
+                        layer,
                         &new_embedding,
                         200, // TODO: ????
                     )?;
+                } else if prob < thresholds[j] || entry_id.is_none() {
+                    HNSW::insert_into_layer(
+                        &mut cache,
+                        eid.unwrap(),
+                        layer,
+                        &new_embedding,
+                        200, // TODO: ????
+                    )?;
+
+                    carryover = Some(new_embedding.id);
                 }
             }
 
@@ -188,7 +235,12 @@ impl HNSW {
             }
         }
 
-        info!("finished building index");
+        lprint!(info, "Dewey: HNSW: Layer stats:");
+        for (i, layer) in layers.iter().enumerate() {
+            lprint!(info, "Dewey: HNSW: - Layer {} has {} nodes", i, layer.len());
+        }
+
+        lprint!(info, "Dewey: HNSW: finished building index");
 
         Ok(Self {
             size: n as u32,
@@ -207,7 +259,9 @@ impl HNSW {
         cache: &mut EmbeddingCache,
         embedding: &Embedding,
     ) -> Result<(), std::io::Error> {
-        let l = if self.layers.is_empty() || self.size.ilog2() > self.layers.len() as u32 {
+        // Recalculations for creating a new layer
+        // `l` is otherwise the number of layers present in the index
+        if self.layers.is_empty() || self.size.ilog2() > self.layers.len() as u32 {
             let n = std::cmp::max(1, self.size);
             let log = std::cmp::max(1, n.ilog2());
             let p = 1.0 / log as f32;
@@ -222,27 +276,47 @@ impl HNSW {
                 .map(|j| p * (1.0 - p).powi((j as i32 - log as i32 + 1).abs()))
                 .rev()
                 .collect::<Vec<_>>();
+        }
 
-            self.layers.len()
-        } else {
-            self.layers.len()
-        };
         let mut rng = thread_rng();
         let prob = rng.gen::<f32>();
 
-        for j in 0..l {
-            let j = j as usize;
-            if prob < self.thresholds[j] || self.entry_id.is_none() {
-                let eid = if self.entry_id.is_none() {
-                    Some(embedding.id)
-                } else {
-                    self.entry_id
-                };
+        // If the node is lucky enough to be inserted in one of the upper layers, it is guaranteed
+        // a spot in the lower layers through this variable
+        let mut carryover = None;
+        for (j, layer) in self.layers.iter_mut().enumerate() {
+            let eid = if self.entry_id.is_none() {
+                Some(embedding.id)
+            } else {
+                self.entry_id
+            };
 
+            // The index entry id _must_ be present in the index
+            if layer.get(&eid.unwrap()).is_none() {
                 HNSW::insert_into_layer(
                     cache,
                     eid.unwrap(),
-                    &mut self.layers[j],
+                    layer,
+                    &embedding,
+                    200, // TODO: ????
+                )?;
+            }
+
+            if prob < self.thresholds[j] || self.entry_id.is_none() {
+                HNSW::insert_into_layer(
+                    cache,
+                    eid.unwrap(),
+                    layer,
+                    &embedding,
+                    200, // TODO: ????
+                )?;
+
+                carryover = eid;
+            } else if carryover.is_some() {
+                HNSW::insert_into_layer(
+                    cache,
+                    carryover.unwrap(),
+                    layer,
                     &embedding,
                     200, // TODO: ????
                 )?;
@@ -348,16 +422,20 @@ impl HNSW {
         }
 
         // there's gotta be a better way to blacklist
-        let mut visited = vec![false; self.size as usize];
-        let mut blacklist = vec![false; self.size as usize];
+        let mut visited = vec![false; self.size as usize + 1];
+        let mut blacklist = vec![false; self.size as usize + 1];
 
         // frankly just a stupid way of using this instead of a min heap
         // but rust f32 doesn't have Eq so i don't know how to work with it
         let mut top_k: Vec<(u64, f32)> = Vec::new();
 
         let mut count = 0;
-        let mut current = self.entry_id.unwrap();
         for layer in self.layers.iter().rev() {
+            let mut current = match top_k.first() {
+                Some(k) => k.0,
+                None => self.entry_id.unwrap(),
+            };
+
             if layer.is_empty() {
                 continue;
             }
@@ -374,12 +452,11 @@ impl HNSW {
                         .filter_map(|(n, _)| {
                             // TODO: the fact that we need to increment/decrement
                             //       the IDs is obscenely stupid
-                            let n = n - 1;
                             if blacklist[n as usize] {
                                 return None;
                             }
 
-                            let e_n = cache.get(n as u32 + 1).unwrap();
+                            let e_n = cache.get(n as u32).unwrap();
                             let mut filter_pass = true;
                             for filter in query.filters.iter() {
                                 for meta in e_n.source_file.meta.iter() {
@@ -415,6 +492,12 @@ impl HNSW {
                         }
 
                         if count >= ef {
+                            lprint!(
+                                info,
+                                "Dewey: .query(): returning {} results after {} comparisons",
+                                top_k.len(),
+                                count
+                            );
                             return top_k
                                 .into_iter()
                                 .map(|(node, distance)| (cache.get(node as u32).unwrap(), distance))
@@ -427,12 +510,14 @@ impl HNSW {
             }
 
             top_k.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-            current = match top_k.first() {
-                Some(k) => k.0,
-                None => continue,
-            };
         }
 
+        lprint!(
+            info,
+            "Dewey: .query(): returning {} results after {} comparisons",
+            top_k.len(),
+            count
+        );
         top_k.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         top_k
             .into_iter()
@@ -476,7 +561,7 @@ impl HNSW {
     }
 
     pub fn serialize(&self, filepath: &String) -> Result<(), std::io::Error> {
-        info!("serializing index to {}", filepath);
+        lprint!(info, "Dewey: HNSW: serializing index to {}", filepath);
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -485,13 +570,13 @@ impl HNSW {
         let bytes = self.to_bytes();
         file.write_all(&bytes)?;
 
-        info!("finished serializing index");
+        lprint!(info, "Dewey: HNSW: finished serializing index");
 
         Ok(())
     }
 
     pub fn deserialize(filepath: String) -> Result<Self, std::io::Error> {
-        info!("deserializing index from {}", filepath);
+        lprint!(info, "Dewey: HNSW: deserializing index from {}", filepath);
 
         let mut file = std::fs::File::open(filepath.clone())?;
         let mut bytes = Vec::new();
@@ -506,7 +591,7 @@ impl HNSW {
             ));
         }
 
-        info!("finished deserializing index");
+        lprint!(info, "Dewey: HNSW: finished deserializing index");
 
         Ok(hnsw)
     }
