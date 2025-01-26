@@ -521,7 +521,7 @@ impl HNSW {
         top_k.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         top_k
             .into_iter()
-            .map(|(node, distance)| (cache.get(node as u32 + 1).unwrap(), distance))
+            .map(|(node, distance)| (cache.get(node as u32).unwrap(), distance))
             .collect::<Vec<_>>()
     }
 

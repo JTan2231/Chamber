@@ -160,8 +160,8 @@ pub struct Message {
 impl Message {
     pub fn update(&self, db: &rusqlite::Connection) -> rusqlite::Result<usize> {
         db.execute(
-            "UPDATE messages SET content = ?2 WHERE id = ?1",
-            params![self.id, self.content],
+            "UPDATE messages SET content = ?2, system_prompt = ?3 WHERE id = ?1",
+            params![self.id, self.content, self.system_prompt],
         )
     }
 

@@ -490,20 +490,34 @@ fn completion(
     //       like, minimum sized system prompts?
     //       System prompt details should also be configurable
     std::fs::write(&filepath, last_user_message.content.clone()).unwrap();
-    let dewey_sources = if let Some(d) = dewey.as_mut() {
-        match d.query(&filepath, Vec::new(), 10) {
-            Ok(ds) => ds,
-            Err(e) => {
-                lprint!(
-                    error,
-                    "Error fetching references from Dewey: {}; ignoring",
-                    e
-                );
-                Vec::new()
+    let dewey_sources = {
+        let now = std::time::Instant::now();
+
+        // TODO: Better stats from Dewey
+        let sources = if let Some(d) = dewey.as_mut() {
+            match d.query(&filepath, Vec::new(), 10) {
+                Ok(ds) => ds,
+                Err(e) => {
+                    lprint!(
+                        error,
+                        "Error fetching references from Dewey: {}; ignoring",
+                        e
+                    );
+                    Vec::new()
+                }
             }
-        }
-    } else {
-        Vec::new()
+        } else {
+            Vec::new()
+        };
+
+        lprint!(
+            info,
+            "Retrieved {} sources from Dewey in {}ms",
+            sources.len(),
+            now.elapsed().as_millis()
+        );
+
+        sources
     };
 
     let system_prompt = build_system_prompt(total_len, &dewey_sources, tokenizer);
@@ -520,11 +534,12 @@ fn completion(
     // Message deltas are streamed back through the channel
     // TODO: We need a better way of propagating errors back to this main thread
     let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let thread_system_prompt = system_prompt.clone();
     std::thread::spawn(move || {
         match network::prompt_stream(
             api,
             &messages_payload[..messages_payload.len() - 1].to_vec(),
-            &system_prompt,
+            &thread_system_prompt,
             tx,
         ) {
             Ok(_) => {}
@@ -552,6 +567,10 @@ fn completion(
                 // This is primarily for accurately storing things in the DB
                 let last = conversation.messages.last_mut().unwrap();
                 last.content.push_str(&message);
+
+                if last.system_prompt.len() == 0 {
+                    last.system_prompt = system_prompt.clone();
+                }
 
                 // Make sure conversation metadata is correctly set
                 let conversation_id = conversation.id.unwrap();
@@ -593,7 +612,6 @@ fn completion(
                 ws_send!(websocket, response);
 
                 // Backend storage duties--SQLite + embedding generation/storage
-
                 match conversation.upsert(db) {
                     Ok(_) => {}
                     Err(e) => {
@@ -809,6 +827,13 @@ fn register_env_var(env_var: &str, value: &str) {
     );
 }
 
+fn set_keys(user_config: &UserConfig) {
+    register_env_var("OPENAI_API_KEY", &user_config.api_keys.openai);
+    register_env_var("ANTHROPIC_API_KEY", &user_config.api_keys.anthropic);
+    register_env_var("GEMINI_API_KEY", &user_config.api_keys.gemini);
+    register_env_var("GROQ_API_KEY", &user_config.api_keys.groq);
+}
+
 // TODO: there is zero error handling around here lol
 async fn websocket_server() {
     setup();
@@ -846,10 +871,7 @@ async fn websocket_server() {
 
     lprint!(info, "Setting environment variables...");
     let user_config = get_config(&db_.lock().unwrap());
-    register_env_var("OPENAI_API_KEY", &user_config.api_keys.openai);
-    register_env_var("ANTHROPIC_API_KEY", &user_config.api_keys.anthropic);
-    register_env_var("GEMINI_API_KEY", &user_config.api_keys.gemini);
-    register_env_var("GROQ_API_KEY", &user_config.api_keys.groq);
+    set_keys(&user_config);
 
     lprint!(info, "Environment variables set");
 
@@ -1126,8 +1148,6 @@ async fn websocket_server() {
                         )
                     }
                     ArrakisRequest::Config { id, payload } => {
-                        println!("Received Config request");
-
                         let db = db.lock().unwrap();
 
                         let config = get_config(&db);
@@ -1165,6 +1185,8 @@ async fn websocket_server() {
                                     continue;
                                 }
                             };
+
+                            set_keys(&payload);
                         } else {
                             ws_send!(websocket, serialize_response!(Config, config, id));
                         }

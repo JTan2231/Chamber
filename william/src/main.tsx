@@ -38,6 +38,7 @@ interface WebSocketHookOptions {
 
 interface WebSocketHookReturn {
   socket: WebSocket | null;
+  setUserConfig: (userConfig: UserConfig | null) => void,
   userConfig: UserConfig | null;
   conversations: Conversation[];
   loadedConversation: Conversation;
@@ -325,7 +326,7 @@ const useWebSocket = ({
   const [loadedConversation, setLoadedConversation] = useState<Conversation>(conversationDefault());
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected'>('disconnected');
   const [error, setError] = useState<Error | null>(null);
-  const [retryCount, setRetryCount] = useState(0);
+  const retryCount = useRef<number>(0);
 
   // A list of outstanding callbacks for outstanding requests
   // Each request going out has a callback associated under the assumption that
@@ -345,82 +346,82 @@ const useWebSocket = ({
   };
 
   const connect = useCallback(() => {
-    try {
-      const ws = new WebSocket(url);
+    const attemptConnection = () => {
+      try {
+        const ws = new WebSocket(url);
 
-      ws.onopen = () => {
-        setConnectionStatus('connected');
-        setError(null);
-        setRetryCount(0);
-      };
+        ws.onopen = () => {
+          setConnectionStatus('connected');
+          setError(null);
+          retryCount.current = 0;
+        };
 
-      // This is a sorry excuse for a REST-ish API
-      // I feel like there's a much better way of structuring the "endpoints" supported by both the front + back ends
-      //
-      // TODO: Refactor because this is gross
-      //       Also to use the new callback system
-      ws.onmessage = (event) => {
-        try {
-          const response = ArrakisResponseSchema.parse(JSON.parse(event.data));
-          if (response.method === 'Completion') {
-            setLoadedConversation(prev => {
-              const completion = CompletionResponseSchema.parse(response.payload);
+        // This is a sorry excuse for a REST-ish API
+        // I feel like there's a much better way of structuring the "endpoints" supported by both the front + back ends
+        //
+        // TODO: Refactor because this is gross
+        //       Also to use the new callback system
+        ws.onmessage = (event) => {
+          try {
+            const response = ArrakisResponseSchema.parse(JSON.parse(event.data));
+            if (response.method === 'Completion') {
+              setLoadedConversation(prev => {
+                const completion = CompletionResponseSchema.parse(response.payload);
 
-              const lcm = prev.messages;
-              const newMessages = [...lcm.slice(0, lcm.length - 1)];
+                const lcm = prev.messages;
+                const newMessages = [...lcm.slice(0, lcm.length - 1)];
 
-              const last = lcm[lcm.length - 1];
-              last.content += completion.delta;
-              last.id = completion.responseId;
+                const last = lcm[lcm.length - 1];
+                last.content += completion.delta;
+                last.id = completion.responseId;
 
-              newMessages[newMessages.length - 1].id = completion.requestId;
-              newMessages.push(last);
+                newMessages[newMessages.length - 1].id = completion.requestId;
+                newMessages.push(last);
 
-              return { id: completion.conversationId, name: completion.name, messages: newMessages };
-            });
-          } else if (response.method === 'Ping' && connectionStatus !== 'connected') {
-            setConnectionStatus('connected');
-          } else if (response.method === 'ConversationList') {
-            const conversationList = ConversationListResponseSchema.parse(response.payload);
-            setConversations(conversationList.conversations);
-          } else if (response.method === 'Load') {
-            const conversation = ConversationSchema.parse(response.payload);
-            setLoadedConversation(conversation);
-          } else if (response.method === 'Config') {
-            const payload = UserConfigResponseSchema.parse(response.payload);
-            setUserConfig(payload);
-          } else if (response.method === 'WilliamError') {
-            const payload = ErrorResponseSchema.parse(response.payload);
-            setError(new Error(payload.message));
-          } else if (response.method === 'Preview') {
-            useResponseCallback(response);
+                return { id: completion.conversationId, name: completion.name, messages: newMessages };
+              });
+            } else if (response.method === 'Ping' && connectionStatus !== 'connected') {
+              setConnectionStatus('connected');
+            } else if (response.method === 'ConversationList') {
+              const conversationList = ConversationListResponseSchema.parse(response.payload);
+              setConversations(conversationList.conversations);
+            } else if (response.method === 'Load') {
+              const conversation = ConversationSchema.parse(response.payload);
+              setLoadedConversation(conversation);
+            } else if (response.method === 'Config') {
+              const payload = UserConfigResponseSchema.parse(response.payload);
+              setUserConfig(payload);
+            } else if (response.method === 'WilliamError') {
+              const payload = ErrorResponseSchema.parse(response.payload);
+              setError(new Error(payload.message));
+            } else if (response.method === 'Preview') {
+              useResponseCallback(response);
+            }
+          } catch (error) {
+            console.log(error);
           }
-        } catch (error) {
-          console.log(error);
+        };
+
+        ws.onclose = () => {
+          setConnectionStatus('disconnected');
+          setSocket(null);
+        };
+
+        setSocket(ws);
+      } catch (err) {
+        if (err instanceof Error) {
+          err.message += `; ${retryCount.current} retries`;
         }
-      };
 
-      // TODO: this needs to be expanded
-      ws.onerror = (_) => {
-        setError(new Error('WebSocket error occurred--backend panic?'));
-      };
+        setError(err instanceof Error ? err : new Error('Failed to create WebSocket connection'));
 
-      ws.onclose = () => {
-        setConnectionStatus('disconnected');
-        setSocket(null);
+        // Retry if things fail, 3 second timer
+        setTimeout(attemptConnection, 3000);
+        retryCount.current += 1;
+      }
+    };
 
-        if (retryCount < maxRetries) {
-          setTimeout(() => {
-            setRetryCount(prev => prev + 1);
-            connect();
-          }, retryInterval);
-        }
-      };
-
-      setSocket(ws);
-    } catch (err) {
-      setError(err instanceof Error ? err : new Error('Failed to create WebSocket connection'));
-    }
+    attemptConnection();
   }, [url, retryCount, maxRetries, retryInterval]);
 
   // Generic message sending function for the backend
@@ -455,6 +456,7 @@ const useWebSocket = ({
 
   return {
     socket,
+    setUserConfig,
     userConfig,
     conversations,
     loadedConversation,
@@ -668,6 +670,7 @@ const UserConfigModal = (props: {
   sendMessage: (message: ArrakisRequest) => void,
   setSelectedModal: (modal: Modal) => void,
   setModel: (model: API) => void,
+  setUserConfig: (newConfig: UserConfig) => void,
 }) => {
   const [apiKeys, setApiKeys] = useState<ApiKeys>({
     openai: props.oldConfig ? props.oldConfig.apiKeys.openai : '',
@@ -695,11 +698,11 @@ const UserConfigModal = (props: {
   };
 
   const handleSubmit = () => {
-    const newConfig = {
+    const newConfig = UserConfigRequestSchema.parse({
       write: true,
       apiKeys,
       systemPrompt: props.oldConfig ? props.oldConfig.systemPrompt : '',
-    } satisfies UserConfig;
+    });
 
     props.sendMessage({
       method: 'Config',
@@ -710,6 +713,7 @@ const UserConfigModal = (props: {
 
     const availableModels = filterAvailableModels(newConfig);
     props.setModel(availableModels[0] as any);
+    props.setUserConfig(newConfig);
   };
 
   return (
@@ -972,6 +976,7 @@ const ConversationHistoryElement = (props: {
 function MainPage() {
   const {
     connectionStatus,
+    setUserConfig,
     userConfig,
     conversations,
     loadedConversation,
@@ -1585,6 +1590,7 @@ function MainPage() {
         width: '100%',
         display: 'flex',
         backgroundColor: '#F8F9F9',
+        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
         paddingLeft: '0.5rem',
         zIndex: 1,
       }}>
@@ -1648,6 +1654,7 @@ function MainPage() {
             sendMessage={sendMessage}
             setSelectedModal={setSelectedModal}
             setModel={setModel}
+            setUserConfig={setUserConfig}
           />
         </div>
       </div>
