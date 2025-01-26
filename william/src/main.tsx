@@ -315,6 +315,7 @@ function conversationDefault(): Conversation {
 
 // Quick and dirty hook for connecting to the backend
 // TODO: this will probably need expanded in the future to accommodate better error handling and the like
+// TODO: Needs a refactor for the new callback argument in `send`
 const useWebSocket = ({
   url,
   retryInterval = 5000,
@@ -952,7 +953,6 @@ const ConversationHistoryElement = (props: {
             }),
             (response: ArrakisResponse) => {
               const payload = PreviewResponseSchema.parse(response.payload);
-              console.log("CHECK", payload);
               setTargetText(payload.content);
               setDisplayedText('');
             });
@@ -962,7 +962,7 @@ const ConversationHistoryElement = (props: {
           setTargetText('');
           setDisplayedText('');
         }}
-        onMouseMove={(e: React.MouseEvent<HTMLDivElement>) => setMousePosition([e.clientX + padding, e.clientY + padding])}
+        onMouseMove={(e: React.MouseEvent<HTMLDivElement>) => setMousePosition([e.pageX + padding, e.pageY + padding])}
       >
         <div onClick={props.getLoadConversationCallback(props.id!)}>
           {formatTitle(props.name)}
@@ -971,7 +971,6 @@ const ConversationHistoryElement = (props: {
     </>
   );
 };
-
 
 function MainPage() {
   const {
@@ -1740,7 +1739,7 @@ function MainPage() {
         // arbitrary margin to keep things above the input container
         marginBottom: `calc(16px + ${inputContainerHeight}px + 24px + 24px)`
       }}>
-        {loadedConversation.messages.map((m) => {
+        {loadedConversation.messages.map((m, i) => {
           // Lot of preprocessing here to properly render the messages into markdown into react components
           // particularly, HTML characters need properly escaped in order to be processed correctly
           // CSS styles also need to be changed--the generated HTML from markdown-it isn't conducive to React inline styling
@@ -1840,7 +1839,14 @@ function MainPage() {
               }}>
                 {
                   /* The actual message elements */
-                  unescapedElements
+                  i < loadedConversation.messages.length - 1 || unescapedElements.length > 0 ? unescapedElements : (
+                    <div
+                      className={`text-placeholder`}
+                      aria-live="polite"
+                    >
+                      {'Thinking...'}
+                    </div>
+                  )
                 }
                 {isUser ? '' : (
                   <p className="messageOptions" style={{

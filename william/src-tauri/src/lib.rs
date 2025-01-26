@@ -10,6 +10,8 @@ mod network;
 mod tiktoken;
 mod types;
 
+// TODO: Quit being stupid and properly secure API keys
+
 macro_rules! ws_send {
     ($ws:expr, $msg:expr) => {
         match $ws.write(tungstenite::Message::text($msg)) {

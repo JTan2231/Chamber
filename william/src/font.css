@@ -242,3 +242,37 @@ mi {
   background: rgba(85, 85, 85, 0.7);
   background-clip: padding-box; /* Maintain transparency on hover */
 }
+
+.text-placeholder {
+  position: relative;
+  overflow: hidden;
+  background-color: transparent;
+  color: #E8E9E9;
+  border-radius: 4px;
+  width: fit-content;
+  height: 20px;
+}
+
+.text-placeholder::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    #F8F9F9A0,
+    transparent
+  );
+  animation: shimmer 2.25s infinite;
+  mix-blend-mode: difference;
+  pointer-events: none;
+}
+
+@keyframes shimmer {
+  100% {
+    left: 100%;
+  }
+}
