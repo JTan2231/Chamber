@@ -302,6 +302,12 @@ pub struct Preview {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DeleteConversation {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: i64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum RequestPayload {
     Ping(Ping),
@@ -312,6 +318,7 @@ pub enum RequestPayload {
     Fork(Fork),
     Config(UserConfig),
     Preview(Preview),
+    DeleteConversation(DeleteConversation),
 }
 
 /// Request in JSON form looks like
@@ -382,6 +389,10 @@ pub enum ArrakisRequest {
     Preview {
         id: String,
         payload: Preview,
+    },
+    DeleteConversation {
+        id: String,
+        payload: DeleteConversation,
     },
 }
 

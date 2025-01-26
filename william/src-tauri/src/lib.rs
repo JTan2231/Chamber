@@ -1196,6 +1196,62 @@ async fn websocket_server() {
                     ArrakisRequest::WilliamError { id: _, payload: _ } => {
                         // There shouldn't be any requests for this type
                     }
+                    // This just deletes the conversation listing in the DB
+                    // TODO: Do we want this to delete the messages?
+                    //       What about the different message paths?
+                    ArrakisRequest::DeleteConversation { id, payload } => {
+                        let db = db.lock().unwrap();
+                        // TODO: Error handling
+                        let _ = db
+                            .execute(
+                                "DELETE FROM conversations WHERE id = ?1",
+                                params![payload.conversation_id],
+                            )
+                            .unwrap();
+
+                        // Copy + pasted from the ConversationList endpoint
+                        let mut query = db
+                            .prepare(
+                                "
+                            SELECT
+                                id,
+                                name
+                            from conversations
+                            order by last_updated desc
+                        ",
+                            )
+                            .unwrap();
+                        let conversations = match query.query_map(params![], |row| {
+                            Ok(Conversation {
+                                id: row.get(0)?,
+                                name: row.get(1)?,
+                                messages: Vec::new(),
+                            })
+                        }) {
+                            Ok(q) => q,
+                            Err(e) => {
+                                ws_error!(
+                                    websocket,
+                                    "ConversationList",
+                                    "Error fetching conversation IDs",
+                                    e,
+                                    id.to_string()
+                                );
+                                continue;
+                            }
+                        }
+                        .map(|c| c.unwrap())
+                        .collect();
+
+                        ws_send!(
+                            websocket,
+                            serialize_response!(
+                                ConversationList,
+                                ConversationList { conversations },
+                                id
+                            )
+                        );
+                    }
                 };
             }
         });

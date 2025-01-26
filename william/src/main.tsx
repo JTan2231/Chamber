@@ -38,9 +38,10 @@ interface WebSocketHookOptions {
 
 interface WebSocketHookReturn {
   socket: WebSocket | null;
-  setUserConfig: (userConfig: UserConfig | null) => void,
+  setUserConfig: (userConfig: UserConfig | null) => void;
   userConfig: UserConfig | null;
   conversations: Conversation[];
+  setConversations: (conversations: Conversation[]) => void;
   loadedConversation: Conversation;
   setLoadedConversation: Function;
   sendMessage: (message: ArrakisRequest) => void;
@@ -124,6 +125,16 @@ const LoadRequestSchema = z.object({
   id: z.number(),
 });
 
+// TODO: Should probably look for a confirmation for this, but 
+//       I don't have a clear idea of how to unify that with
+//       everything else at the moment.
+//       e.g., should such information be relayed to the user?
+//             or maybe it would just be better to relegate to the logs.
+//             But then they should probably know if there was an issue.
+const DeleteConversationRequestSchema = z.object({
+  conversationId: z.number(),
+});
+
 const ForkRequestSchema = z.object({
   conversationId: z.number(),
   sequence: z.number(),
@@ -192,6 +203,11 @@ const ArrakisRequestSchema = z.discriminatedUnion("method", [
     method: z.literal("Preview"),
     id: z.string().optional(),
     payload: PreviewRequestSchema,
+  }),
+  z.object({
+    method: z.literal("DeleteConversation"),
+    id: z.string().optional(),
+    payload: DeleteConversationRequestSchema,
   }),
 ]);
 
@@ -460,6 +476,7 @@ const useWebSocket = ({
     setUserConfig,
     userConfig,
     conversations,
+    setConversations,
     loadedConversation,
     setLoadedConversation,
     sendMessage,
@@ -620,7 +637,10 @@ const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, mo
       document.removeEventListener('mousedown', handleClickOutside as any);
       document.removeEventListener('keydown', handleKeyPress);
     };
-  }, []);
+  },
+    // Setting this as a dependency because the hotkey picker function
+    // needs updated whenever a new/fresh config is established
+    [props.userConfig]);
 
   return (
     <div
@@ -629,7 +649,6 @@ const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, mo
       className="buttonHoverLight"
       style={menuButtonStyle}>
       {MODEL_LABEL_MAPPING[props.model]}
-
       {
         isOpen && (
           <div
@@ -641,6 +660,7 @@ const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, mo
               // i.e., no API key, no model option
               filterAvailableModels(props.userConfig).map(m => (
                 <div
+                  key={crypto.randomUUID()}
                   onClick={() => props.modelCallback(m)}
                   className="buttonHover"
                   style={{
@@ -854,11 +874,12 @@ function ConnectionStatus(props: { error: Error | null, connectionStatus: string
 
 const ConversationHistoryElement = (props: {
   name: string,
-  id: number | null,
+  conversationId: number | null,
   // Callback to load the conversation to the chat when this element is selected
   getLoadConversationCallback: any,
   // Our hook into the existing websocket connection
   sendMessage: any,
+  setConversations: (conversations: Conversation[]) => void,
 }) => {
   const [mousePosition, setMousePosition] = useState<number[]>([0, 0]);
   const [mouseIn, setMouseIn] = useState<boolean>(false);
@@ -940,6 +961,7 @@ const ConversationHistoryElement = (props: {
           borderRadius: '0.5rem',
           textWrap: 'pretty',
           marginLeft: '16px',
+          display: 'flex',
         }}
         onMouseEnter={() => {
           setMouseIn(true);
@@ -947,7 +969,7 @@ const ConversationHistoryElement = (props: {
             ArrakisRequestSchema.parse({
               method: 'Preview',
               payload: PreviewRequestSchema.parse({
-                conversationId: props.id!,
+                conversationId: props.conversationId!,
                 content: '',
               })
             }),
@@ -964,9 +986,28 @@ const ConversationHistoryElement = (props: {
         }}
         onMouseMove={(e: React.MouseEvent<HTMLDivElement>) => setMousePosition([e.pageX + padding, e.pageY + padding])}
       >
-        <div onClick={props.getLoadConversationCallback(props.id!)}>
+        <div
+          style={{
+            flexGrow: 1
+          }}
+          onClick={props.getLoadConversationCallback(props.conversationId!)}>
           {formatTitle(props.name)}
         </div>
+        <div
+          className="trash"
+          onClick={(e: React.MouseEvent<HTMLDivElement>) => {
+            e.stopPropagation();
+            props.sendMessage(ArrakisRequestSchema.parse({
+              method: 'DeleteConversation',
+              payload: DeleteConversationRequestSchema.parse({
+                conversationId: props.conversationId,
+              }),
+            }), (response: ArrakisResponse) => {
+              const payload = ConversationListResponseSchema.parse(response.payload);
+              props.setConversations(payload.conversations);
+            });
+          }}
+        >Delete</div>
       </div>
     </>
   );
@@ -1424,7 +1465,7 @@ function MainPage() {
             onClick={close}
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-              <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <g stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <line x1="6" y1="6" x2="18" y2="18" />
                 <line x1="18" y1="6" x2="6" y2="18" />
               </g>
@@ -1485,7 +1526,7 @@ function MainPage() {
               <ConversationHistoryElement
                 key={c.id}
                 name={c.name}
-                id={c.id}
+                conversationId={c.id}
                 getLoadConversationCallback={getConversationCallback}
                 sendMessage={sendMessage} />
             ))}

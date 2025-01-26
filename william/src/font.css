@@ -276,3 +276,12 @@ mi {
     left: 100%;
   }
 }
+
+.trash {
+    color: black;
+    transition: color 0.3s ease;
+}
+
+.trash:hover {
+    color: red;
+}
