@@ -380,7 +380,13 @@ const useWebSocket = ({
         //       Also to use the new callback system
         ws.onmessage = (event) => {
           try {
-            const response = ArrakisResponseSchema.parse(JSON.parse(event.data));
+            const responseJSON = JSON.parse(event.data);
+            // We really need a better way of handling this
+            if (responseJSON.method === 'CompletionEnd') {
+              return;
+            }
+
+            const response = ArrakisResponseSchema.parse(responseJSON);
             if (response.method === 'Completion') {
               setLoadedConversation(prev => {
                 const completion = CompletionResponseSchema.parse(response.payload);
@@ -401,7 +407,13 @@ const useWebSocket = ({
               setConnectionStatus('connected');
             } else if (response.method === 'ConversationList') {
               const conversationList = ConversationListResponseSchema.parse(response.payload);
-              setConversations(conversationList.conversations);
+
+              // TODO: properly deprecate this old way in lieu of using the id-callback mappings
+              if (callbacks.current[response.id]) {
+                useResponseCallback(response);
+              } else {
+                setConversations(conversationList.conversations);
+              }
             } else if (response.method === 'Load') {
               const conversation = ConversationSchema.parse(response.payload);
               setLoadedConversation(conversation);
@@ -1019,6 +1031,7 @@ function MainPage() {
     setUserConfig,
     userConfig,
     conversations,
+    setConversations,
     loadedConversation,
     setLoadedConversation,
     sendMessage,
@@ -1528,7 +1541,12 @@ function MainPage() {
                 name={c.name}
                 conversationId={c.id}
                 getLoadConversationCallback={getConversationCallback}
-                sendMessage={sendMessage} />
+                sendMessage={sendMessage}
+                setConversations={(conversations: Conversation[]) => {
+                  setConversations(conversations);
+                  resetConversation();
+                }}
+              />
             ))}
         </div>
       </div>
@@ -1890,13 +1908,15 @@ function MainPage() {
                   )
                 }
                 {isUser ? '' : (
-                  <p className="messageOptions" style={{
-                    position: 'absolute',
-                    transform: 'translateY(calc(-100% + 0.5rem))',
-                    userSelect: 'none',
-                    cursor: 'pointer',
-                    display: 'flex',
-                  }}>
+                  <p
+                    className="messageOptions"
+                    style={{
+                      position: 'absolute',
+                      transform: 'translateY(calc(-100% + 0.5rem))',
+                      userSelect: 'none',
+                      cursor: 'pointer',
+                      display: 'flex',
+                    }}>
                     <div>•</div>
                     <div style={{
                       width: 'fit-content',
