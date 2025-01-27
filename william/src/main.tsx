@@ -117,10 +117,6 @@ const UserConfigRequestSchema = z.object({
   apiKeys: ApiKeysSchema,
 });
 
-const PingRequestSchema = z.object({
-  body: z.string(),
-});
-
 const LoadRequestSchema = z.object({
   id: z.number(),
 });
@@ -163,8 +159,6 @@ const ErrorResponseSchema = z.object({
 
 const UserConfigResponseSchema = UserConfigRequestSchema;
 
-const PingResponseSchema = PingRequestSchema;
-
 const ConversationListResponseSchema = z.object({
   conversations: z.array(ConversationSchema),
 });
@@ -173,11 +167,6 @@ const ArrakisRequestSchema = z.discriminatedUnion("method", [
   z.object({
     method: z.literal("ConversationList"),
     id: z.string().optional(),
-  }),
-  z.object({
-    method: z.literal("Ping"),
-    id: z.string().optional(),
-    payload: PingRequestSchema,
   }),
   z.object({
     method: z.literal("Completion"),
@@ -223,11 +212,6 @@ const ArrakisResponseSchema = z.discriminatedUnion("method", [
     payload: ConversationSchema,
   }),
   z.object({
-    method: z.literal("Ping"),
-    id: z.string(),
-    payload: PingResponseSchema,
-  }),
-  z.object({
     method: z.literal("Completion"),
     id: z.string(),
     payload: CompletionResponseSchema,
@@ -255,7 +239,6 @@ type Conversation = z.infer<typeof ConversationSchema>;
 type ApiKeys = z.infer<typeof ApiKeysSchema>;
 type UserConfig = z.infer<typeof UserConfigRequestSchema>;
 type UserConfigRequest = z.infer<typeof UserConfigRequestSchema>;
-type PingRequest = z.infer<typeof PingRequestSchema>;
 type LoadRequest = z.infer<typeof LoadRequestSchema>;
 type ArrakisRequest = z.infer<typeof ArrakisRequestSchema>;
 type ArrakisResponse = z.infer<typeof ArrakisResponseSchema>;
@@ -364,90 +347,95 @@ const useWebSocket = ({
 
   const connect = useCallback(() => {
     const attemptConnection = () => {
-      try {
-        const ws = new WebSocket(url);
+      setTimeout(() => {
+        try {
+          const ws = new WebSocket(url);
 
-        ws.onopen = () => {
-          setConnectionStatus('connected');
-          setError(null);
-          retryCount.current = 0;
-        };
+          ws.onopen = () => {
+            setConnectionStatus('connected');
+            setError(null);
+            retryCount.current = 0;
+          };
 
-        // This is a sorry excuse for a REST-ish API
-        // I feel like there's a much better way of structuring the "endpoints" supported by both the front + back ends
-        //
-        // TODO: Refactor because this is gross
-        //       Also to use the new callback system
-        ws.onmessage = (event) => {
-          try {
-            const responseJSON = JSON.parse(event.data);
-            // We really need a better way of handling this
-            if (responseJSON.method === 'CompletionEnd') {
-              return;
-            }
-
-            const response = ArrakisResponseSchema.parse(responseJSON);
-            if (response.method === 'Completion') {
-              setLoadedConversation(prev => {
-                const completion = CompletionResponseSchema.parse(response.payload);
-
-                const lcm = prev.messages;
-                const newMessages = [...lcm.slice(0, lcm.length - 1)];
-
-                const last = lcm[lcm.length - 1];
-                last.content += completion.delta;
-                last.id = completion.responseId;
-
-                newMessages[newMessages.length - 1].id = completion.requestId;
-                newMessages.push(last);
-
-                return { id: completion.conversationId, name: completion.name, messages: newMessages };
-              });
-            } else if (response.method === 'Ping' && connectionStatus !== 'connected') {
-              setConnectionStatus('connected');
-            } else if (response.method === 'ConversationList') {
-              const conversationList = ConversationListResponseSchema.parse(response.payload);
-
-              // TODO: properly deprecate this old way in lieu of using the id-callback mappings
-              if (callbacks.current[response.id]) {
-                useResponseCallback(response);
-              } else {
-                setConversations(conversationList.conversations);
+          // This is a sorry excuse for a REST-ish API
+          // I feel like there's a much better way of structuring the "endpoints" supported by both the front + back ends
+          //
+          // TODO: Refactor because this is gross
+          //       Also to use the new callback system
+          ws.onmessage = (event) => {
+            try {
+              const responseJSON = JSON.parse(event.data);
+              // We really need a better way of handling this
+              if (responseJSON.method === 'CompletionEnd') {
+                return;
               }
-            } else if (response.method === 'Load') {
-              const conversation = ConversationSchema.parse(response.payload);
-              setLoadedConversation(conversation);
-            } else if (response.method === 'Config') {
-              const payload = UserConfigResponseSchema.parse(response.payload);
-              setUserConfig(payload);
-            } else if (response.method === 'WilliamError') {
-              const payload = ErrorResponseSchema.parse(response.payload);
-              setError(new Error(payload.message));
-            } else if (response.method === 'Preview') {
-              useResponseCallback(response);
+
+              const response = ArrakisResponseSchema.parse(responseJSON);
+              if (response.method === 'Completion') {
+                setLoadedConversation(prev => {
+                  const completion = CompletionResponseSchema.parse(response.payload);
+
+                  const lcm = prev.messages;
+                  const newMessages = [...lcm.slice(0, lcm.length - 1)];
+
+                  const last = lcm[lcm.length - 1];
+                  last.content += completion.delta;
+                  last.id = completion.responseId;
+
+                  newMessages[newMessages.length - 1].id = completion.requestId;
+                  newMessages.push(last);
+
+                  return { id: completion.conversationId, name: completion.name, messages: newMessages };
+                });
+              } else if (response.method === 'ConversationList') {
+                const conversationList = ConversationListResponseSchema.parse(response.payload);
+
+                // TODO: properly deprecate this old way in lieu of using the id-callback mappings
+                if (callbacks.current[response.id]) {
+                  useResponseCallback(response);
+                } else {
+                  setConversations(conversationList.conversations);
+                }
+              } else if (response.method === 'Load') {
+                const conversation = ConversationSchema.parse(response.payload);
+                setLoadedConversation(conversation);
+              } else if (response.method === 'Config') {
+                const payload = UserConfigResponseSchema.parse(response.payload);
+                setUserConfig(payload);
+              } else if (response.method === 'WilliamError') {
+                const payload = ErrorResponseSchema.parse(response.payload);
+                setError(new Error(payload.message));
+              } else if (response.method === 'Preview') {
+                useResponseCallback(response);
+              }
+            } catch (error) {
+              console.error('Error receiving websocket message:', error);
+              throw error;
             }
-          } catch (error) {
-            console.log(error);
+          };
+
+          ws.onerror = () => {
+            throw new Error('Error in websocket');
+          };
+
+          ws.onclose = () => {
+            setConnectionStatus('disconnected');
+            setSocket(null);
+          };
+
+          setSocket(ws);
+        } catch (err) {
+          if (err instanceof Error) {
+            err.message += `; ${retryCount.current} retries`;
           }
-        };
 
-        ws.onclose = () => {
-          setConnectionStatus('disconnected');
-          setSocket(null);
-        };
+          setError(err instanceof Error ? err : new Error('Failed to create WebSocket connection'));
 
-        setSocket(ws);
-      } catch (err) {
-        if (err instanceof Error) {
-          err.message += `; ${retryCount.current} retries`;
+          console.log('trying another reconnection');
+          setTimeout(attemptConnection, 1000);
+          retryCount.current += 1;
         }
-
-        setError(err instanceof Error ? err : new Error('Failed to create WebSocket connection'));
-
-        // Retry if things fail, 3 second timer
-        setTimeout(attemptConnection, 3000);
-        retryCount.current += 1;
-      }
+      }, 2500);
     };
 
     attemptConnection();
@@ -1323,23 +1311,6 @@ function MainPage() {
       // The newline case is handled implicitly here
     }
   };
-
-  // Ping to see if we're connected to the backend
-  // TODO: I don't think this should really be here
-  //       The disconnection from the backend has some pretty immediate feedback
-  useEffect(() => {
-    const pingInterval = setInterval(() => {
-      sendMessage(ArrakisRequestSchema.parse({
-        method: 'Ping',
-        payload: {
-          body: 'ping',
-        } satisfies PingRequest,
-      }));
-    }, 5000);
-
-    // Clean up interval when component unmounts
-    return () => clearInterval(pingInterval);
-  }, [sendMessage]);
 
   // Whenever a modal is selected, get a list of the saved conversations from the backend
   // TODO: this could probably be cleaned up to be only when the History modal is loaded
