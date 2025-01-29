@@ -435,7 +435,7 @@ const useWebSocket = ({
           setTimeout(attemptConnection, 1000);
           retryCount.current += 1;
         }
-      }, 2500);
+      }, 1000);
     };
 
     attemptConnection();
@@ -680,7 +680,7 @@ const ModelDropdown = (props: { userConfig: UserConfig | null, model: string, mo
 
 // TODO: Take another look at how this is being used,
 //       I think it should probably be removed/refactored at this point
-type Modal = 'config' | 'search' | null;
+type Modal = 'config' | 'search' | 'prompt' | null;
 
 // This serves two purposes:
 // - To prompt the user when they're first opening the app and don't have any API keys set
@@ -1013,6 +1013,83 @@ const ConversationHistoryElement = (props: {
   );
 };
 
+// This is largely a copy of ConversationHistoryElement
+// and the whole tooltip bit should be abstracted somehow
+//
+// Frankly the whole way this is being used is remarkably stupid.
+// This really needs a refactor.
+const MessageOptionsTooltip = (props: {
+  mousePosition: number[],
+  windowOpen: boolean,
+  hoveredSystemPrompt: string,
+}) => {
+  const [displayedText, setDisplayedText] = useState<string>('');
+
+  // Use refs for intervalId and currentIndex
+  const intervalIdRef = useRef<number | null>(null);
+  const currentIndexRef = useRef<number>(0);
+
+  useEffect(() => {
+    // Clear any existing interval before starting a new one
+    if (intervalIdRef.current !== null) {
+      clearInterval(intervalIdRef.current);
+    }
+
+    // Reset current index and displayed text when targetText changes
+    currentIndexRef.current = 0;
+    setDisplayedText(props.hoveredSystemPrompt ? props.hoveredSystemPrompt[0] : '');
+
+    const updateText = () => {
+      if (currentIndexRef.current >= Math.min(1000, props.hoveredSystemPrompt.length)) {
+        if (intervalIdRef.current !== null) {
+          clearInterval(intervalIdRef.current);
+          intervalIdRef.current = null;
+        }
+        if (props.hoveredSystemPrompt.length > 1000) {
+          setDisplayedText(props.hoveredSystemPrompt.slice(0, 1000) + '...');
+        }
+        return;
+      }
+      currentIndexRef.current++;
+      setDisplayedText(props.hoveredSystemPrompt.slice(0, currentIndexRef.current));
+    };
+
+    // Set up the interval
+    intervalIdRef.current = window.setInterval(updateText, 5);
+
+    // Clean up on unmount or when dependencies change
+    return () => {
+      if (intervalIdRef.current !== null) {
+        clearInterval(intervalIdRef.current);
+        intervalIdRef.current = null;
+      }
+    };
+  }, [props.hoveredSystemPrompt, props.windowOpen]);
+
+  return (
+    <div
+      style={{
+        transition: 'opacity 0.3s ease',
+        opacity: props.windowOpen ? 1 : 0,
+        position: 'fixed',
+        maxHeight: '468px',
+        maxWidth: '468px',
+        left: `${props.mousePosition[0] + 10}px`,
+        top: `${props.mousePosition[1] + 10}px`,
+        pointerEvents: 'none',
+        zIndex: 1000,
+        backgroundColor: '#FFFFFF',
+        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+        cursor: 'default',
+        borderRadius: '0.5rem',
+        color: '#000000',
+        fontSize: '14px',
+        padding: '15px',
+      }}
+    >{displayedText}</div>
+  );
+};
+
 function MainPage() {
   const {
     connectionStatus,
@@ -1045,6 +1122,12 @@ function MainPage() {
   // This represents the model to be used to generate the next message in the conversation
   // Chosen through the dropdown (jump up?) menu in the bottom left
   const [model, setModel] = useState<API>(getAvailableModel(userConfig));
+
+  // This is for the cursor modal for individual message options
+  // These should really be relegated somewhere else
+  const [windowOpen, setWindowOpen] = useState<boolean>(false);
+  const [hoveredSystemPrompt, setHoveredSystemPrompt] = useState<string>('');
+  const [mousePosition, setMousePosition] = useState<number[]>([0, 0]);
 
   // The conversation title card in the top left
   // TODO: this is a little unstable and needs debugging when conversation names are changing around
@@ -1688,6 +1771,12 @@ function MainPage() {
         </div>
       </div>
 
+      <MessageOptionsTooltip
+        mousePosition={mousePosition}
+        windowOpen={windowOpen}
+        hoveredSystemPrompt={hoveredSystemPrompt}
+      />
+
       {
         /*
          * This is the main wrapper around the chat input that places it in the center of the screen
@@ -1879,57 +1968,79 @@ function MainPage() {
                   )
                 }
                 {isUser ? '' : (
-                  <p
-                    className="messageOptions"
-                    style={{
-                      position: 'absolute',
-                      transform: 'translateY(calc(-100% + 0.5rem))',
-                      userSelect: 'none',
-                      cursor: 'pointer',
-                      display: 'flex',
-                    }}>
-                    <div>•</div>
-                    <div style={{
-                      width: 'fit-content',
-                      overflow: 'hidden',
-                    }}>
-                      <div className="messageOptionsRow">
-                        <div style={{
-                          padding: '0 0.5rem',
-                        }} onClick={() => {
-                          // Regeneration option for a given message
-                          // This forks the existing conversation and saves the new conversation as a new entry in the listing
-                          // All conversation up to the regenerated message is kept, all conversation history after is left behind in the old conversation
+                  <div>
+                    <p
+                      className="messageOptions"
+                      style={{
+                        position: 'absolute',
+                        transform: 'translateY(calc(-100% + 0.5rem))',
+                        userSelect: 'none',
+                        cursor: 'pointer',
+                        display: 'flex',
+                      }}>
+                      <div>•</div>
+                      <div style={{
+                        width: 'fit-content',
+                        overflow: 'hidden',
+                      }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                          }}
+                          className="messageOptionsRow"
+                        >
+                          <div
+                            style={{
+                              padding: '0 0.5rem',
+                            }}
+                            onClick={() => {
+                              // Regeneration option for a given message
+                              // This forks the existing conversation and saves the new conversation as a new entry in the listing
+                              // All conversation up to the regenerated message is kept, all conversation history after is left behind in the old conversation
 
-                          sendMessage(ArrakisRequestSchema.parse({
-                            method: 'Fork',
-                            payload: ForkRequestSchema.parse({
-                              conversationId: loadedConversation.id,
-                              sequence: m.sequence
-                            })
-                          }));
+                              sendMessage(ArrakisRequestSchema.parse({
+                                method: 'Fork',
+                                payload: ForkRequestSchema.parse({
+                                  conversationId: loadedConversation.id,
+                                  sequence: m.sequence
+                                })
+                              }));
 
-                          const conversation = {
-                            ...loadedConversation,
-                            messages: loadedConversation.messages.slice(0, m.sequence + 1),
-                          };
+                              const conversation = {
+                                ...loadedConversation,
+                                messages: loadedConversation.messages.slice(0, m.sequence + 1),
+                              };
 
-                          let last = conversation.messages[conversation.messages.length - 1];
+                              let last = conversation.messages[conversation.messages.length - 1];
 
-                          // Cleaning message metadata for the new conversation entry
-                          last.content = '';
-                          last.id = null;
-                          last.message_type = 'Assistant';
-                          last.system_prompt = userConfig ? userConfig.systemPrompt : '';
-                          last.api = model;
+                              // Cleaning message metadata for the new conversation entry
+                              last.content = '';
+                              last.id = null;
+                              last.message_type = 'Assistant';
+                              last.system_prompt = userConfig ? userConfig.systemPrompt : '';
+                              last.api = model;
 
-                          conversation.messages[conversation.messages.length - 1] = last;
+                              conversation.messages[conversation.messages.length - 1] = last;
 
-                          setLoadedConversation(conversation);
-                        }}>Regenerate</div>
+                              setLoadedConversation(conversation);
+                            }}
+                            className="messageOptionsItem"
+                          >Regenerate</div>
+                          <div
+                            onMouseEnter={() => {
+                              setWindowOpen(true);
+                              setHoveredSystemPrompt(m.system_prompt);
+                            }}
+                            onMouseLeave={() => setWindowOpen(false)}
+                            onMouseMove={(e: React.MouseEvent<HTMLDivElement>) => setMousePosition([e.clientX, e.clientY])}
+                            style={{
+                              cursor: 'default',
+                            }}
+                          >Prompt</div>
+                        </div>
                       </div>
-                    </div>
-                  </p>
+                    </p>
+                  </div>
                 )}
               </div>
             </>

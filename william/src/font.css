@@ -184,7 +184,7 @@ li {
 
 .messageOptions {
     color: #ADADAD;
-    transition: color 0.3s ease;
+    transition: color 0.15s ease;
 }
 
 .messageOptions:hover {
@@ -198,12 +198,20 @@ li {
 
 .messageOptionsRow:hover {
     color: #0D0D0D;
+}
+
+.messageOptionsItem {
+    text-shadow: 0 0 8px #00000000;
+    transition: all 0.15s ease;
+}
+
+.messageOptionsItem:hover {
     text-shadow: 0 0 8px #00000060;
 }
 
 .messageOptions .messageOptionsRow {
     transform: translateX(-100%);
-    transition: all 0.3s ease;
+    transition: all 0.4s ease;
 }
 
 .messageOptions:hover .messageOptionsRow {
