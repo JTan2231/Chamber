@@ -61,6 +61,14 @@ macro_rules! serialize_response {
     };
 }
 
+macro_rules! safe_lock {
+    ($mutex:expr) => {
+        $mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    };
+}
+
 // Check if a directory exists, and create if needed
 // Mainly just used in initialization
 fn create_if_nonexistent(path: &std::path::PathBuf) {
@@ -863,15 +871,14 @@ async fn websocket_server() {
     lprint!(info, "SQLite connection established");
 
     // DB initialization
-    db_.lock()
-        .unwrap()
+    safe_lock!(db_)
         .execute_batch(DB_SETUP_STATEMENTS)
         .expect("Failed to initialize database");
 
     lprint!(info, "SQLite database initialized");
 
     lprint!(info, "Setting environment variables...");
-    let user_config = get_config(&db_.lock().unwrap());
+    let user_config = get_config(&safe_lock!(db_));
     set_keys(&user_config);
 
     lprint!(info, "Environment variables set");
@@ -948,9 +955,9 @@ async fn websocket_server() {
                             &mut websocket,
                             &id,
                             payload,
-                            tokenizer.lock().unwrap().as_ref(),
-                            &db.lock().unwrap(),
-                            dewey.lock().unwrap().as_mut(),
+                            safe_lock!(tokenizer).as_ref(),
+                            &safe_lock!(db),
+                            safe_lock!(dewey).as_mut(),
                         );
                     }
                     // TODO: Not sure how necessary this is
@@ -968,7 +975,7 @@ async fn websocket_server() {
                     }
                     // Retrieve a list of saved conversation IDs
                     ArrakisRequest::ConversationList { id } => {
-                        let db = db.lock().unwrap();
+                        let db = safe_lock!(db);
                         let mut query = db
                             .prepare(
                                 "
@@ -1017,15 +1024,14 @@ async fn websocket_server() {
                             websocket,
                             serialize_response!(
                                 Load,
-                                get_conversation(payload.id, &db.lock().unwrap()).into(),
+                                get_conversation(payload.id, &safe_lock!(db)).into(),
                                 id
                             )
                         );
                     }
                     // Fetch the first message of a conversation from its conversation ID
                     ArrakisRequest::Preview { id, mut payload } => {
-                        let message =
-                            get_first_message(payload.conversation_id, &db.lock().unwrap());
+                        let message = get_first_message(payload.conversation_id, &safe_lock!(db));
                         payload.content = message.content;
                         ws_send!(websocket, serialize_response!(Preview, payload, id));
                     }
@@ -1038,7 +1044,7 @@ async fn websocket_server() {
                     //       conversation history. They also need renamed based on the conversation
                     //       redirection
                     ArrakisRequest::Fork { id, payload } => {
-                        let db = db.lock().unwrap();
+                        let db = safe_lock!(db);
 
                         let mut conversation = get_conversation(payload.conversation_id, &db);
 
@@ -1089,13 +1095,13 @@ async fn websocket_server() {
                             &mut websocket,
                             &id,
                             conversation,
-                            tokenizer.lock().unwrap().as_ref(),
+                            safe_lock!(tokenizer).as_ref(),
                             &db,
-                            dewey.lock().unwrap().as_mut(),
+                            safe_lock!(dewey).as_mut(),
                         )
                     }
                     ArrakisRequest::Config { id, payload } => {
-                        let db = db.lock().unwrap();
+                        let db = safe_lock!(db);
 
                         let config = get_config(&db);
 
@@ -1145,7 +1151,7 @@ async fn websocket_server() {
                     // TODO: Do we want this to delete the messages?
                     //       What about the different message paths?
                     ArrakisRequest::DeleteConversation { id, payload } => {
-                        let db = db.lock().unwrap();
+                        let db = safe_lock!(db);
                         // TODO: Error handling
                         let _ = db
                             .execute(

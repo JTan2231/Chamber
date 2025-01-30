@@ -38,6 +38,7 @@ interface WebSocketHookOptions {
 
 interface WebSocketHookReturn {
   socket: WebSocket | null;
+  connect: () => void;
   setUserConfig: (userConfig: UserConfig | null) => void;
   userConfig: UserConfig | null;
   conversations: Conversation[];
@@ -348,10 +349,15 @@ const useWebSocket = ({
   const connect = useCallback(() => {
     const attemptConnection = () => {
       setTimeout(() => {
+        if (socket) {
+          socket.close();
+        }
+
         try {
           const ws = new WebSocket(url);
 
           ws.onopen = () => {
+            console.log('Websocket connected');
             setConnectionStatus('connected');
             setError(null);
             retryCount.current = 0;
@@ -487,6 +493,7 @@ const useWebSocket = ({
 
   return {
     socket,
+    connect,
     setUserConfig,
     userConfig,
     conversations,
@@ -834,7 +841,11 @@ function getAvailableModel(userConfig: UserConfig | null) {
 
 // The little dot in the top left
 // Will tell the status of the backend connection + any errors when hovered
-function ConnectionStatus(props: { error: Error | null, connectionStatus: string }) {
+function ConnectionStatus(props: {
+  error: Error | null,
+  connectionStatus: string,
+  connect: () => void
+}) {
   // Array of [x, y]
   const [mousePosition, setMousePosition] = useState<number[]>([0, 0]);
   const [mouseIn, setMouseIn] = useState<boolean>(false);
@@ -866,6 +877,7 @@ function ConnectionStatus(props: { error: Error | null, connectionStatus: string
         onMouseEnter={() => setMouseIn(true)}
         onMouseLeave={() => setMouseIn(false)}
         onMouseMove={(e: React.MouseEvent<HTMLDivElement>) => setMousePosition([e.clientX + padding, e.clientY + padding])}
+        onClick={props.connect}
       >
         <div
           style={{
@@ -1132,6 +1144,7 @@ const MessageOptionsTooltip = (props: {
 function MainPage() {
   const {
     connectionStatus,
+    connect,
     setUserConfig,
     userConfig,
     conversations,
@@ -1747,7 +1760,7 @@ function MainPage() {
         zIndex: 1,
       }}>
         { /* Element to determine whether the frontend has an established websocket connection with the backend */}
-        <ConnectionStatus error={error} connectionStatus={connectionStatus} />
+        <ConnectionStatus error={error} connectionStatus={connectionStatus} connect={connect} />
 
         { /* Create a new conversation and clear the current conversation history */}
         <div className="buttonHoverLight" onClick={resetConversation} style={menuButtonStyle}>New</div>
