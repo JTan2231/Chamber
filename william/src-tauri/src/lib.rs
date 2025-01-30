@@ -601,17 +601,16 @@ fn completion(
                 lprint!(info, "Assuming stream completed... ({})", e);
 
                 // Weird one-off response serialization
-                let response = match serde_json::to_string(&ArrakisResponse::CompletionEnd {
-                    id: request_id.to_string(),
-                }) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        lprint!(error, "Error deserializing response: {}", e);
-                        panic!("William can't function with serde errors! Shutting down.");
-                    }
-                };
-
-                ws_send!(websocket, response);
+                ws_send!(
+                    websocket,
+                    serialize_response!(
+                        CompletionEnd,
+                        SystemPrompt {
+                            content: system_prompt,
+                        },
+                        request_id.to_string()
+                    )
+                );
 
                 // Backend storage duties--SQLite + embedding generation/storage
                 match conversation.upsert(db) {
@@ -1029,60 +1028,6 @@ async fn websocket_server() {
                             get_first_message(payload.conversation_id, &db.lock().unwrap());
                         payload.content = message.content;
                         ws_send!(websocket, serialize_response!(Preview, payload, id));
-                    }
-                    // Read or write to the saved system prompt, depending on the request
-                    ArrakisRequest::SystemPrompt { id, payload } => {
-                        let path = get_config_dir().join("system_prompt");
-
-                        if payload.write {
-                            match std::fs::write(path.clone(), payload.content) {
-                                Ok(_) => {
-                                    lprint!(
-                                        info,
-                                        "system prompt saved to {}",
-                                        path.to_str().unwrap(),
-                                    );
-                                }
-                                Err(e) => {
-                                    ws_error!(
-                                        websocket,
-                                        "SystemPrompt",
-                                        "Error saving system prompt",
-                                        e,
-                                        id.to_string()
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            continue;
-                        }
-
-                        let content = match std::fs::read_to_string(path.clone()) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                ws_error!(
-                                    websocket,
-                                    "SystemPrompt",
-                                    "error reading system prompt file {}: {}",
-                                    e,
-                                    id.to_string()
-                                );
-                                continue;
-                            }
-                        };
-
-                        ws_send!(
-                            websocket,
-                            serialize_response!(
-                                SystemPrompt,
-                                SystemPrompt {
-                                    write: false,
-                                    content,
-                                },
-                                id
-                            )
-                        );
                     }
                     // get the current conversation,
                     // create the fork,

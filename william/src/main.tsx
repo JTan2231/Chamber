@@ -367,6 +367,20 @@ const useWebSocket = ({
               const responseJSON = JSON.parse(event.data);
               // We really need a better way of handling this
               if (responseJSON.method === 'CompletionEnd') {
+                // Updating the front end with the system prompt
+                // used to generate the last completion
+                setLoadedConversation(prev => {
+                  const lcm = prev.messages;
+                  const newMessages = [...lcm.slice(0, lcm.length - 1)];
+
+                  const last = lcm[lcm.length - 1];
+                  last.system_prompt = responseJSON.payload.content;
+
+                  newMessages.push(last);
+
+                  return { id: prev.id, name: prev.name, messages: newMessages };
+                });
+
                 return;
               }
 
@@ -1013,14 +1027,7 @@ const ConversationHistoryElement = (props: {
   );
 };
 
-// This is largely a copy of ConversationHistoryElement
-// and the whole tooltip bit should be abstracted somehow
-//
-// Frankly the whole way this is being used is remarkably stupid.
-// This really needs a refactor.
-const MessageOptionsTooltip = (props: {
-  mousePosition: number[],
-  windowOpen: boolean,
+const TypeWriterText = (props: {
   hoveredSystemPrompt: string,
 }) => {
   const [displayedText, setDisplayedText] = useState<string>('');
@@ -1028,6 +1035,8 @@ const MessageOptionsTooltip = (props: {
   // Use refs for intervalId and currentIndex
   const intervalIdRef = useRef<number | null>(null);
   const currentIndexRef = useRef<number>(0);
+
+  const limit = 250;
 
   useEffect(() => {
     // Clear any existing interval before starting a new one
@@ -1040,14 +1049,16 @@ const MessageOptionsTooltip = (props: {
     setDisplayedText(props.hoveredSystemPrompt ? props.hoveredSystemPrompt[0] : '');
 
     const updateText = () => {
-      if (currentIndexRef.current >= Math.min(1000, props.hoveredSystemPrompt.length)) {
+      if (currentIndexRef.current >= Math.min(limit, props.hoveredSystemPrompt.length)) {
         if (intervalIdRef.current !== null) {
           clearInterval(intervalIdRef.current);
           intervalIdRef.current = null;
         }
-        if (props.hoveredSystemPrompt.length > 1000) {
-          setDisplayedText(props.hoveredSystemPrompt.slice(0, 1000) + '...');
+
+        if (props.hoveredSystemPrompt.length > limit) {
+          setDisplayedText(props.hoveredSystemPrompt.slice(0, limit) + '...');
         }
+
         return;
       }
       currentIndexRef.current++;
@@ -1055,7 +1066,7 @@ const MessageOptionsTooltip = (props: {
     };
 
     // Set up the interval
-    intervalIdRef.current = window.setInterval(updateText, 5);
+    intervalIdRef.current = window.setInterval(updateText, 10);
 
     // Clean up on unmount or when dependencies change
     return () => {
@@ -1064,8 +1075,25 @@ const MessageOptionsTooltip = (props: {
         intervalIdRef.current = null;
       }
     };
-  }, [props.hoveredSystemPrompt, props.windowOpen]);
+  }, [props.hoveredSystemPrompt]);
 
+  return (
+    <div>
+      {displayedText}
+    </div>
+  );
+};
+
+// This is largely a copy of ConversationHistoryElement
+// and the whole tooltip bit should be abstracted somehow
+//
+// Frankly the whole way this is being used is remarkably stupid.
+// This really needs a refactor.
+const MessageOptionsTooltip = (props: {
+  mousePosition: number[],
+  windowOpen: boolean,
+  hoveredSystemPrompts: string[],
+}) => {
   return (
     <div
       style={{
@@ -1086,7 +1114,18 @@ const MessageOptionsTooltip = (props: {
         fontSize: '14px',
         padding: '15px',
       }}
-    >{displayedText}</div>
+    >{props.hoveredSystemPrompts.map((hsp: string, i: number) => (
+      <div
+        style={{
+          borderBottom: i < props.hoveredSystemPrompts.length - 1 ? '1px solid #E0E0E0' : '',
+          padding: '0.25rem',
+        }}
+      >
+        <TypeWriterText
+          hoveredSystemPrompt={hsp}
+        />
+      </div>
+    ))}</div>
   );
 };
 
@@ -1126,7 +1165,7 @@ function MainPage() {
   // This is for the cursor modal for individual message options
   // These should really be relegated somewhere else
   const [windowOpen, setWindowOpen] = useState<boolean>(false);
-  const [hoveredSystemPrompt, setHoveredSystemPrompt] = useState<string>('');
+  const [hoveredSystemPrompts, setHoveredSystemPrompts] = useState<string[]>(['']);
   const [mousePosition, setMousePosition] = useState<number[]>([0, 0]);
 
   // The conversation title card in the top left
@@ -1209,6 +1248,7 @@ function MainPage() {
     setSelectedModal(null);
     setLoadedConversation(conversationDefault());
     setDisplayedTitle(titleDefault());
+    setWindowOpen(false);
   };
 
   // Setup event listeners for typing anywhere -> focusing the input
@@ -1774,7 +1814,7 @@ function MainPage() {
       <MessageOptionsTooltip
         mousePosition={mousePosition}
         windowOpen={windowOpen}
-        hoveredSystemPrompt={hoveredSystemPrompt}
+        hoveredSystemPrompts={hoveredSystemPrompts}
       />
 
       {
@@ -1943,6 +1983,17 @@ function MainPage() {
 
           const isUser = m.message_type === 'User';
 
+          // Parsing the system prompt references for cleaner display
+          // TODO: This streaming setup really needs to be cleaned
+          //       This is far too much work to be doing when streaming completions
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(m.system_prompt, 'text/xml');
+
+          const referenceElements = doc.querySelectorAll('reference');
+
+          const references: string[] = Array.from(referenceElements).map((prop: any) =>
+            prop.textContent?.trim() ?? '');
+
           // Actually build the component which holds the chat history + all the contained messages
           return (
             <>
@@ -2029,14 +2080,15 @@ function MainPage() {
                           <div
                             onMouseEnter={() => {
                               setWindowOpen(true);
-                              setHoveredSystemPrompt(m.system_prompt);
+                              setHoveredSystemPrompts(references);
                             }}
                             onMouseLeave={() => setWindowOpen(false)}
                             onMouseMove={(e: React.MouseEvent<HTMLDivElement>) => setMousePosition([e.clientX, e.clientY])}
                             style={{
-                              cursor: 'default',
+                              cursor: 'help',
+                              userSelect: 'none',
                             }}
-                          >Prompt</div>
+                          >References</div>
                         </div>
                       </div>
                     </p>

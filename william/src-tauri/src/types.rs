@@ -247,12 +247,6 @@ impl Conversation {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct SystemPrompt {
-    pub write: bool,
-    pub content: String,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ConversationList {
     pub conversations: Vec<Conversation>,
 }
@@ -314,7 +308,6 @@ pub enum RequestPayload {
     Completion(Conversation),
     ConversationList,
     Load(LoadConversation),
-    SystemPrompt(SystemPrompt),
     Fork(Fork),
     Config(UserConfig),
     Preview(Preview),
@@ -370,10 +363,6 @@ pub enum ArrakisRequest {
         id: String,
         payload: LoadConversation,
     },
-    SystemPrompt {
-        id: String,
-        payload: SystemPrompt,
-    },
     Fork {
         id: String,
         payload: Fork,
@@ -401,10 +390,9 @@ pub enum ArrakisRequest {
 pub enum ResponsePayload {
     Ping(Ping),
     Completion(Completion),
-    CompletionEnd,
+    CompletionEnd(SystemPrompt),
     ConversationList(ConversationList),
     Load(Conversation),
-    SystemPrompt(SystemPrompt),
     Config(UserConfig),
     WilliamError(WilliamError),
     Preview(Preview),
@@ -414,6 +402,11 @@ pub enum ResponsePayload {
 pub struct WilliamError {
     pub error_type: String,
     pub message: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SystemPrompt {
+    pub content: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -442,6 +435,7 @@ pub enum ArrakisResponse {
     },
     CompletionEnd {
         id: String,
+        payload: SystemPrompt,
     },
     ConversationList {
         id: String,
@@ -450,10 +444,6 @@ pub enum ArrakisResponse {
     Load {
         id: String,
         payload: Conversation,
-    },
-    SystemPrompt {
-        id: String,
-        payload: SystemPrompt,
     },
     Config {
         id: String,
