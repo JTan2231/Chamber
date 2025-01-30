@@ -1048,7 +1048,7 @@ const TypeWriterText = (props: {
   const intervalIdRef = useRef<number | null>(null);
   const currentIndexRef = useRef<number>(0);
 
-  const limit = 250;
+  const limit = 150;
 
   useEffect(() => {
     // Clear any existing interval before starting a new one
@@ -1090,7 +1090,13 @@ const TypeWriterText = (props: {
   }, [props.hoveredSystemPrompt]);
 
   return (
-    <div>
+    <div
+      style={{
+        overflow: 'hidden',
+        textWrap: 'nowrap',
+        textOverflow: 'ellipsis',
+      }}
+    >
       {displayedText}
     </div>
   );
@@ -1106,16 +1112,19 @@ const MessageOptionsTooltip = (props: {
   windowOpen: boolean,
   hoveredSystemPrompts: string[],
 }) => {
+  const bottomHalf = props.mousePosition[1] > window.innerHeight / 2;
+
   return (
     <div
       style={{
         transition: 'opacity 0.3s ease',
         opacity: props.windowOpen ? 1 : 0,
         position: 'fixed',
-        maxHeight: '468px',
+        maxHeight: '256px',
         maxWidth: '468px',
         left: `${props.mousePosition[0] + 10}px`,
-        top: `${props.mousePosition[1] + 10}px`,
+        top: bottomHalf ? '' : `${props.mousePosition[1] + 10}px`,
+        bottom: bottomHalf ? `${window.innerHeight - props.mousePosition[1] + 10}px` : '',
         pointerEvents: 'none',
         zIndex: 1000,
         backgroundColor: '#FFFFFF',
@@ -1125,6 +1134,7 @@ const MessageOptionsTooltip = (props: {
         color: '#000000',
         fontSize: '14px',
         padding: '15px',
+        overflow: 'hidden',
       }}
     >{props.hoveredSystemPrompts.map((hsp: string, i: number) => (
       <div
@@ -1886,11 +1896,6 @@ function MainPage() {
               backgroundColor: 'transparent',
             }}
           />
-          <div style={{
-            display: 'flex',
-          }}>
-
-          </div>
         </div>
       </div>
 
@@ -1899,7 +1904,7 @@ function MainPage() {
         position: 'relative',
         maxWidth: '768px',
         minWidth: '40vw',
-        left: '50%',
+        left: 'calc(50% - 10px)', // calc to properly center with our 20px margins
         transform: 'translate(-50%)',
         marginLeft: '20px',
         marginRight: '20px',
@@ -2015,7 +2020,6 @@ function MainPage() {
                 borderRadius: '0.5rem',
                 margin: '2rem 0.25rem 1.5rem 0.25rem',
                 padding: '0.01rem 0',
-                width: isUser ? 'fit-content' : '',
                 marginLeft: isUser ? 'auto' : '',
                 position: 'relative',
                 fontSize: '14px',
