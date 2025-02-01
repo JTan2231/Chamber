@@ -8,10 +8,14 @@ and only exposed to their respective LLM providers.
 - [x] Markdown chats
 - [x] o1 models
 - [x] RAG memory
-- [ ] Secure API key storage
+- [ ] Secure API key storage (is this even feasible locally?)
 - [ ] (Better) Conversation forking + message retries
 - [ ] Artifacts
 - [ ] Non-webkit UI
+- [ ] Actual documentation
+- [ ] Better cross-platform support/testing (this has really only been tested on MacOS)
+- [ ] Non-text media usage
+- [ ] On-screen modal/pop-up chat desktop integration chat (what is this called?)
 
 # Usage
 
