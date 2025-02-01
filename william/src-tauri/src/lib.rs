@@ -263,6 +263,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     api_config_id INTEGER NOT NULL,
     system_prompt TEXT NOT NULL,
+    date_created TIMESTAMP NOT NULL,
     FOREIGN KEY (message_type_id) REFERENCES message_types(id),
     FOREIGN KEY (api_config_id) REFERENCES api_configurations(id)
 );

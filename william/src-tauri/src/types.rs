@@ -175,7 +175,7 @@ impl Message {
         )?;
 
         let update_count = db.execute(
-            "INSERT INTO messages (message_type_id, content, api_config_id, system_prompt) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO messages (message_type_id, content, api_config_id, system_prompt, date_created) VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)",
             params![
                 self.message_type.id(),
                 self.content,
