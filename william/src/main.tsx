@@ -434,7 +434,8 @@ const useWebSocket = ({
             }
           };
 
-          ws.onerror = () => {
+          ws.onerror = (error: any) => {
+            console.log("error:", error);
             throw new Error('Error in websocket');
           };
 

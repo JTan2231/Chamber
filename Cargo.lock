@@ -4955,6 +4955,7 @@ dependencies = [
  "base64 0.22.1",
  "bstr",
  "chamber-common",
+ "cocoa",
  "dewey-core",
  "fancy-regex",
  "native-tls",
