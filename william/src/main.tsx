@@ -907,6 +907,7 @@ const ConversationHistoryElement = (props: {
   // Our hook into the existing websocket connection
   sendMessage: any,
   setConversations: (conversations: Conversation[]) => void,
+  scrollOffset: number[],
 }) => {
   const [mousePosition, setMousePosition] = useState<number[]>([0, 0]);
   const [mouseIn, setMouseIn] = useState<boolean>(false);
@@ -967,8 +968,8 @@ const ConversationHistoryElement = (props: {
         style={{
           pointerEvents: 'none',
           position: 'fixed',
-          left: `${mousePosition[0]}px`,
-          top: `${mousePosition[1]}px`,
+          left: `${mousePosition[0] + props.scrollOffset[1]}px`,
+          top: `${mousePosition[1] + props.scrollOffset[0]}px`,
           transition: 'opacity 0.5s',
           opacity: mouseIn ? 1 : 0,
           fontSize: '14px',
@@ -989,6 +990,8 @@ const ConversationHistoryElement = (props: {
           textWrap: 'pretty',
           marginLeft: '16px',
           display: 'flex',
+          margin: '10px',
+          padding: '0.4rem 0.5rem',
         }}
         onMouseEnter={() => {
           setMouseIn(true);
@@ -1484,6 +1487,8 @@ function MainPage() {
   const buildHistoryModal = () => {
     const [searchInput, setSearchInput] = useState<string>('');
 
+    const scrollableRef = useRef<HTMLDivElement | null>(null);
+
     const close = () => {
       setSelectedModal(null)
       setSearchInput('');
@@ -1559,6 +1564,7 @@ function MainPage() {
     // Build the modal HTML with the listed conversations
     return (
       <div
+        ref={scrollableRef}
         className="scrollbar"
         style={{
           transition: 'all 0.3s',
@@ -1664,6 +1670,13 @@ function MainPage() {
                   setConversations(conversations);
                   resetConversation();
                 }}
+                scrollOffset={(() => {
+                  if (scrollableRef.current) {
+                    return [scrollableRef.current.scrollTop, scrollableRef.current.scrollLeft];
+                  } else {
+                    return [0, 0];
+                  }
+                })()}
               />
             ))}
         </div>
@@ -1739,7 +1752,7 @@ function MainPage() {
         top: 0,
         height: '100vh',
         width: '100vw',
-        backgroundColor: '#0000000A',
+        backgroundColor: '#F7F9F9A0',
         backdropFilter: triggerCondition ? `blur(${blur}px)` : 'blur(0px)',
         WebkitBackdropFilter: triggerCondition ? `blur(${blur}px)` : 'blur(0px)',
         transition: 'all 0.3s',
