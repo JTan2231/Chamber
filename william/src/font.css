@@ -261,3 +261,18 @@ mi {
 .trash:hover {
     color: red;
 }
+
+/*
+ * By default, the tooltip re-renders on each mouse movement.
+ * This is hideous to witness, so this is to mitigate.
+ */
+.recharts-tooltip-wrapper {
+  /* Horrible hack */
+  transition: opacity 0.3s linear, transform 0.01s !important;
+  visibility: visible !important;
+  opacity: 0;
+}
+
+.recharts-tooltip-wrapper[style*="visible"] {
+  opacity: 1;
+}

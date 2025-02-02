@@ -32,7 +32,7 @@ macro_rules! ws_send {
 //       else
 macro_rules! ws_error {
     ($ws:expr, $error_type:expr, $error_message:expr, $e:expr, $request_id:expr) => {
-        let message = format!("{}: {}", $error_message, $e);
+        let message = format!("{}: {:?}", $error_message, $e);
         lprint!(error, "{}", message);
         let response = serialize_response!(
             WilliamError,
@@ -47,6 +47,8 @@ macro_rules! ws_error {
     }
 }
 
+// Shorthand for serializing an ArrakisResponse for the websocket
+// alongside the associated error handling
 macro_rules! serialize_response {
     ($payload_type:ident, $payload:expr, $request_id:expr) => {
         match serde_json::to_string(&ArrakisResponse::$payload_type {
@@ -62,6 +64,9 @@ macro_rules! serialize_response {
     };
 }
 
+// Safe lock for arc-mutexed elements.
+// This macro exists and is used under the assumption that EVERYTHING it is being used on is
+// _always_ safe from mutex poisoning issues in case of panic
 macro_rules! safe_lock {
     ($mutex:expr) => {
         $mutex
@@ -591,6 +596,8 @@ fn completion(
                 let response_id = last.id.unwrap();
                 let conversation_name = conversation.name.clone();
 
+                println!("delta: {}", message);
+
                 ws_send!(
                     websocket,
                     serialize_response!(
@@ -686,7 +693,8 @@ fn get_conversation(conversation_id: i64, db: &rusqlite::Connection) -> Conversa
                 api.provider,
                 api.name,
                 m.system_prompt,
-                l.sequence
+                l.sequence,
+                m.date_created
             FROM conversations c
             JOIN paths l ON c.id = l.conversation_id
             JOIN messages m ON l.message_id = m.id
@@ -713,6 +721,7 @@ fn get_conversation(conversation_id: i64, db: &rusqlite::Connection) -> Conversa
                 api,
                 row.get::<_, String>("system_prompt")?,
                 row.get::<_, i32>("sequence")?,
+                row.get::<_, String>("date_created")?,
             ))
         })
         .unwrap();
@@ -733,6 +742,7 @@ fn get_conversation(conversation_id: i64, db: &rusqlite::Connection) -> Conversa
             api: row.5,
             system_prompt: row.6,
             sequence: row.7,
+            date_created: row.8,
         });
     }
 
@@ -751,7 +761,8 @@ fn get_first_message(conversation_id: i64, db: &rusqlite::Connection) -> Message
                 api.provider,
                 api.name,
                 m.system_prompt,
-                l.sequence
+                l.sequence,
+                m.date_created
             FROM conversations c
             JOIN paths l ON c.id = l.conversation_id
             JOIN messages m ON l.message_id = m.id
@@ -777,6 +788,7 @@ fn get_first_message(conversation_id: i64, db: &rusqlite::Connection) -> Message
                 api,
                 system_prompt: row.get::<_, String>("system_prompt")?,
                 sequence: row.get::<_, i32>("sequence")?,
+                date_created: row.get::<_, String>("date_created")?,
             })
         })
         .unwrap();
@@ -1207,6 +1219,102 @@ async fn websocket_server() {
                             )
                         );
                     }
+                    // TODO: This will most definitely need more fleshed out
+                    ArrakisRequest::Usage { id, payload } => {
+                        let db = safe_lock!(db);
+                        let tokenizer = safe_lock!(tokenizer);
+
+                        if tokenizer.is_none() {
+                            ws_error!(
+                                websocket,
+                                "Usage",
+                                "Error fetching messages",
+                                Err::<String, std::io::Error>(std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "Error fetching tokenizer"
+                                )),
+                                id.to_string()
+                            );
+
+                            continue;
+                        }
+
+                        let tokenizer = tokenizer.as_ref().unwrap();
+
+                        let mut stmt = db
+                            .prepare(
+                                "SELECT
+                                id,
+                                message_type_id,
+                                content,
+                                api_config_id,
+                                system_prompt,
+                                date(date_created)
+                             FROM messages
+                             WHERE date_created BETWEEN ?1 AND ?2
+                             ORDER BY date_created ASC",
+                            )
+                            .unwrap();
+
+                        let messages = match stmt.query_map(
+                            params![payload.date_from, payload.date_to],
+                            |row| {
+                                Ok(Message {
+                                    id: row.get(0)?,
+                                    // TODO: This should come from the db
+                                    message_type: MessageType::User,
+                                    content: row.get(2)?,
+                                    api: payload.api,
+                                    system_prompt: row.get(4)?,
+                                    // TODO: This should come from the db, if at all
+                                    sequence: -1,
+                                    date_created: row.get(5)?,
+                                })
+                            },
+                        ) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                ws_error!(
+                                    websocket,
+                                    "Usage",
+                                    "Error fetching messages",
+                                    e,
+                                    id.to_string()
+                                );
+                                continue;
+                            }
+                        }
+                        .map(|m| m.unwrap())
+                        .collect::<Vec<Message>>();
+
+                        let mut tokens = Vec::new();
+                        let mut dates = Vec::new();
+
+                        let mut last_date = String::new();
+                        for m in messages.iter() {
+                            let token_count = tokenizer.encode(&m.content).len();
+                            if m.date_created != last_date {
+                                tokens.push(token_count);
+                                dates.push(m.date_created.clone());
+                            } else {
+                                *(tokens.last_mut().unwrap()) += token_count;
+                            }
+
+                            last_date = m.date_created.clone();
+                        }
+
+                        ws_send!(
+                            websocket,
+                            serialize_response!(
+                                Usage,
+                                UsageResponse {
+                                    token_usage: tokens,
+                                    dates
+                                },
+                                id
+                            )
+                        );
+                    }
                 };
             }
         });
@@ -1238,6 +1346,7 @@ pub fn run() {
 
                 let ns_window = window.ns_window().unwrap() as id;
                 unsafe {
+                    // This should always match the color of the app internally
                     let bg_color = NSColor::colorWithRed_green_blue_alpha_(
                         nil,
                         248.0 / 255.0,

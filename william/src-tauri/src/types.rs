@@ -38,7 +38,7 @@ impl MessageType {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "provider", content = "model")]
 pub enum API {
     #[serde(rename = "openai")]
@@ -49,7 +49,7 @@ pub enum API {
     Anthropic(AnthropicModel),
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub enum OpenAIModel {
     #[serde(rename = "gpt-4o")]
     GPT4o,
@@ -61,13 +61,13 @@ pub enum OpenAIModel {
     O1Mini,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub enum GroqModel {
     #[serde(rename = "llama3-70b-8192")]
     LLaMA70B,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub enum AnthropicModel {
     #[serde(rename = "claude-3-opus-20240229")]
     Claude3Opus,
@@ -155,6 +155,7 @@ pub struct Message {
     pub api: API,
     pub system_prompt: String,
     pub sequence: i32,
+    pub date_created: String,
 }
 
 impl Message {
@@ -302,6 +303,17 @@ pub struct DeleteConversation {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct UsageRequest {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: Option<i64>,
+    pub api: API,
+    #[serde(rename = "dateFrom")]
+    pub date_from: String,
+    #[serde(rename = "dateTo")]
+    pub date_to: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum RequestPayload {
     Ping(Ping),
@@ -312,6 +324,7 @@ pub enum RequestPayload {
     Config(UserConfig),
     Preview(Preview),
     DeleteConversation(DeleteConversation),
+    Usage(UsageRequest),
 }
 
 /// Request in JSON form looks like
@@ -383,6 +396,10 @@ pub enum ArrakisRequest {
         id: String,
         payload: DeleteConversation,
     },
+    Usage {
+        id: String,
+        payload: UsageRequest,
+    },
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -423,6 +440,12 @@ pub struct Completion {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct UsageResponse {
+    pub token_usage: Vec<usize>,
+    pub dates: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "method")]
 pub enum ArrakisResponse {
     Ping {
@@ -456,6 +479,10 @@ pub enum ArrakisResponse {
     Preview {
         id: String,
         payload: Preview,
+    },
+    Usage {
+        id: String,
+        payload: UsageResponse,
     },
 }
 

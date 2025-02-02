@@ -4,6 +4,7 @@ import ReactDOM from 'react-dom/client';
 import MarkdownIt from 'markdown-it';
 import markdownItKatex from 'markdown-it-katex';
 import { z } from 'zod';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import hljs from 'highlight.js';
 
 import './font.css';
@@ -26,6 +27,8 @@ const md = new MarkdownIt({
 // TODO: There's gotta be a better way of organizing things than a series of comments
 //       More meaning implicit in structure, please
 
+// TODO: Literally any documentation about how the networking works
+
 const root = ReactDOM.createRoot(
   document.getElementById('root') as HTMLElement
 );
@@ -34,20 +37,6 @@ interface WebSocketHookOptions {
   url: string;
   retryInterval?: number;
   maxRetries?: number;
-}
-
-interface WebSocketHookReturn {
-  socket: WebSocket | null;
-  connect: () => void;
-  setUserConfig: (userConfig: UserConfig | null) => void;
-  userConfig: UserConfig | null;
-  conversations: Conversation[];
-  setConversations: (conversations: Conversation[]) => void;
-  loadedConversation: Conversation;
-  setLoadedConversation: Function;
-  sendMessage: (message: ArrakisRequest) => void;
-  connectionStatus: 'connecting' | 'connected' | 'disconnected';
-  error: Error | null;
 }
 
 // A variety of types for communicating with the backend
@@ -94,6 +83,7 @@ const MessageSchema = z.object({
   api: APISchema,
   system_prompt: z.string(),
   sequence: z.number(),
+  date_created: z.string(),
 });
 
 const ConversationSchema = z.object({
@@ -140,6 +130,18 @@ const ForkRequestSchema = z.object({
 const PreviewRequestSchema = z.object({
   conversationId: z.number().int(),
   content: z.string()
+});
+
+const UsageRequestSchema = z.object({
+  conversationId: z.number().int().optional(),
+  api: z.string(),
+  dateFrom: z.string(),
+  dateTo: z.string(),
+});
+
+const UsageResponseSchema = z.object({
+  tokenUsage: z.number().array(),
+  dates: z.string().array(),
 });
 
 const PreviewResponseSchema = PreviewRequestSchema;
@@ -199,6 +201,11 @@ const ArrakisRequestSchema = z.discriminatedUnion("method", [
     id: z.string().optional(),
     payload: DeleteConversationRequestSchema,
   }),
+  z.object({
+    method: z.literal("Usage"),
+    id: z.string().optional(),
+    payload: UsageRequestSchema,
+  }),
 ]);
 
 const ArrakisResponseSchema = z.discriminatedUnion("method", [
@@ -232,6 +239,11 @@ const ArrakisResponseSchema = z.discriminatedUnion("method", [
     id: z.string(),
     payload: PreviewResponseSchema,
   }),
+  z.object({
+    method: z.literal("Usage"),
+    id: z.string(),
+    payload: UsageResponseSchema,
+  }),
 ]);
 
 type API = z.infer<typeof APISchema>;
@@ -239,10 +251,52 @@ type Message = z.infer<typeof MessageSchema>;
 type Conversation = z.infer<typeof ConversationSchema>;
 type ApiKeys = z.infer<typeof ApiKeysSchema>;
 type UserConfig = z.infer<typeof UserConfigRequestSchema>;
-type UserConfigRequest = z.infer<typeof UserConfigRequestSchema>;
 type LoadRequest = z.infer<typeof LoadRequestSchema>;
+type Usage = z.infer<typeof UsageResponseSchema>;
+type Preview = z.infer<typeof PreviewResponseSchema>;
+type Completion = z.infer<typeof CompletionResponseSchema>;
+type ConversationList = z.infer<typeof ConversationListResponseSchema>;
 type ArrakisRequest = z.infer<typeof ArrakisRequestSchema>;
-type ArrakisResponse = z.infer<typeof ArrakisResponseSchema>;
+
+// A mapping of response methods and their associated schemas
+const METHOD_SCHEMA_MAP = {
+  Completion: CompletionResponseSchema,
+  ConversationList: ConversationListResponseSchema,
+  Config: UserConfigResponseSchema,
+  WilliamError: ErrorResponseSchema,
+  Load: ConversationSchema,
+  Usage: UsageResponseSchema,
+  Delete: DeleteConversationRequestSchema,
+  Fork: CompletionResponseSchema,
+  Preview: PreviewResponseSchema,
+  DeleteConversation: ConversationListResponseSchema,
+} as const;
+
+// I really don't know what this is doing
+type MethodPayloadMap = {
+  [K in keyof typeof METHOD_SCHEMA_MAP]: z.infer<typeof METHOD_SCHEMA_MAP[K]>
+};
+
+// A function that accepts any of the METHOD_SCHEMA_MAP values as a function arg type
+type ResponseCallback = (response: MethodPayloadMap[keyof MethodPayloadMap]) => void;
+type WebSocketSend = <M extends keyof typeof METHOD_SCHEMA_MAP>(
+  message: { method: M } & ArrakisRequest,
+  callback?: (response: MethodPayloadMap[M]) => void
+) => void;
+
+interface WebSocketHookReturn {
+  socket: WebSocket | null;
+  connect: () => void;
+  setUserConfig: (userConfig: UserConfig | null) => void;
+  userConfig: UserConfig | null;
+  conversations: Conversation[];
+  setConversations: (conversations: Conversation[]) => void;
+  loadedConversation: Conversation;
+  setLoadedConversation: Function;
+  sendMessage: WebSocketSend;
+  connectionStatus: 'connecting' | 'connected' | 'disconnected';
+  error: Error | null;
+}
 
 // TODO: disgusting mixing of concerns between this and the main page
 //       should probably centralize everything dealing with message responses
@@ -334,17 +388,7 @@ const useWebSocket = ({
   // something will happen with the acquired data from the response
   //
   // TODO: There will need to be some refactoring to account for this addition
-  const callbacks = useRef<{ [key: string]: (response: ArrakisResponse) => void }>({});
-
-  // This consumes the callback associated with the given response
-  // (if there is any to begin with)
-  // If there isn't an associated callback, this function passes through silently
-  const useResponseCallback = (response: ArrakisResponse) => {
-    if (callbacks.current[response.id]) {
-      callbacks.current[response.id](response);
-      delete callbacks.current[response.id];
-    }
-  };
+  const callbacks = useRef<{ [key: string]: ResponseCallback }>({});
 
   const connect = useCallback(() => {
     const attemptConnection = () => {
@@ -363,11 +407,7 @@ const useWebSocket = ({
             retryCount.current = 0;
           };
 
-          // This is a sorry excuse for a REST-ish API
-          // I feel like there's a much better way of structuring the "endpoints" supported by both the front + back ends
-          //
-          // TODO: Refactor because this is gross
-          //       Also to use the new callback system
+          // TODO: There could probably be some proper error handling here
           ws.onmessage = (event) => {
             try {
               const responseJSON = JSON.parse(event.data);
@@ -387,47 +427,37 @@ const useWebSocket = ({
                   return { id: prev.id, name: prev.name, messages: newMessages };
                 });
 
+                // TODO: Really hacky and stupid solution to this Completion response nonsense
+                callbacks.current = {};
+
+                return;
+              }
+              // Special case, as we'll never send a request to purposely get an error response
+              else if (responseJSON.method === 'WilliamError') {
+                const payload = ErrorResponseSchema.parse(responseJSON.payload);
+                setError(new Error(payload.message));
+
                 return;
               }
 
               const response = ArrakisResponseSchema.parse(responseJSON);
-              if (response.method === 'Completion') {
-                setLoadedConversation(prev => {
-                  const completion = CompletionResponseSchema.parse(response.payload);
 
-                  const lcm = prev.messages;
-                  const newMessages = [...lcm.slice(0, lcm.length - 1)];
+              // This consumes the callback associated with the given response
+              // (if there is any to begin with)
+              // If there isn't an associated callback, nothing happens
+              if (callbacks.current[response.id]) {
+                const schema = METHOD_SCHEMA_MAP[response.method as keyof typeof METHOD_SCHEMA_MAP];
+                if (schema) {
+                  const parsed = schema.parse(response.payload);
+                  callbacks.current[response.id](parsed);
 
-                  const last = lcm[lcm.length - 1];
-                  last.content += completion.delta;
-                  last.id = completion.responseId;
-
-                  newMessages[newMessages.length - 1].id = completion.requestId;
-                  newMessages.push(last);
-
-                  return { id: completion.conversationId, name: completion.name, messages: newMessages };
-                });
-              } else if (response.method === 'ConversationList') {
-                const conversationList = ConversationListResponseSchema.parse(response.payload);
-
-                // TODO: properly deprecate this old way in lieu of using the id-callback mappings
-                if (callbacks.current[response.id]) {
-                  useResponseCallback(response);
-                } else {
-                  setConversations(conversationList.conversations);
+                  // Special case for Completions as they come in many responses rather than just one
+                  if (response.method !== 'Completion') {
+                    delete callbacks.current[response.id];
+                  }
                 }
-              } else if (response.method === 'Load') {
-                const conversation = ConversationSchema.parse(response.payload);
-                setLoadedConversation(conversation);
-              } else if (response.method === 'Config') {
-                const payload = UserConfigResponseSchema.parse(response.payload);
-                setUserConfig(payload);
-              } else if (response.method === 'WilliamError') {
-                const payload = ErrorResponseSchema.parse(response.payload);
-                setError(new Error(payload.message));
-              } else if (response.method === 'Preview') {
-                useResponseCallback(response);
               }
+
             } catch (error) {
               console.error('Error receiving websocket message:', error);
               throw error;
@@ -467,12 +497,15 @@ const useWebSocket = ({
   //
   // IDs are assigned here and managed through solely within this socket hook
   // TODO: Probably a refactor to ensure they can't be tampered with outside this hook
-  const sendMessage = useCallback((message: ArrakisRequest, callback?: (response: ArrakisResponse) => void) => {
+  const sendMessage = useCallback(<M extends keyof typeof METHOD_SCHEMA_MAP>(
+    message: { method: M } & ArrakisRequest,
+    callback?: (response: MethodPayloadMap[M]) => void
+  ) => {
     if (socket?.readyState === WebSocket.OPEN) {
       message.id = crypto.randomUUID();
 
       if (callback) {
-        callbacks.current[message.id] = callback;
+        callbacks.current[message.id] = callback as ResponseCallback;
       }
 
       socket.send(typeof message === 'string' ? message : JSON.stringify(message));
@@ -710,7 +743,7 @@ type Modal = 'config' | 'search' | 'prompt' | null;
 const UserConfigModal = (props: {
   visible: boolean,
   oldConfig: UserConfig | null,
-  sendMessage: (message: ArrakisRequest) => void,
+  sendMessage: WebSocketSend,
   setSelectedModal: (modal: Modal) => void,
   setModel: (model: API) => void,
   setUserConfig: (newConfig: UserConfig) => void,
@@ -750,7 +783,9 @@ const UserConfigModal = (props: {
     props.sendMessage({
       method: 'Config',
       payload: newConfig,
-    } satisfies ArrakisRequest);
+    } satisfies ArrakisRequest, (response: UserConfig) => {
+      props.setUserConfig(response);
+    });
 
     props.setSelectedModal(null);
 
@@ -905,9 +940,10 @@ const ConversationHistoryElement = (props: {
   // Callback to load the conversation to the chat when this element is selected
   getLoadConversationCallback: any,
   // Our hook into the existing websocket connection
-  sendMessage: any,
+  sendMessage: WebSocketSend,
   setConversations: (conversations: Conversation[]) => void,
   scrollOffset: number[],
+  setCurrentPage: any,
 }) => {
   const [mousePosition, setMousePosition] = useState<number[]>([0, 0]);
   const [mouseIn, setMouseIn] = useState<boolean>(false);
@@ -996,16 +1032,15 @@ const ConversationHistoryElement = (props: {
         onMouseEnter={() => {
           setMouseIn(true);
           props.sendMessage(
-            ArrakisRequestSchema.parse({
+            {
               method: 'Preview',
               payload: PreviewRequestSchema.parse({
                 conversationId: props.conversationId!,
                 content: '',
               })
-            }),
-            (response: ArrakisResponse) => {
-              const payload = PreviewResponseSchema.parse(response.payload);
-              setTargetText(payload.content);
+            } satisfies ArrakisRequest,
+            (response: Preview) => {
+              setTargetText(response.content);
               setDisplayedText('');
             });
         }}
@@ -1020,25 +1055,27 @@ const ConversationHistoryElement = (props: {
           style={{
             flexGrow: 1
           }}
-          onClick={props.getLoadConversationCallback(props.conversationId!)}>
+          onClick={() => {
+            props.setCurrentPage('chat');
+            props.getLoadConversationCallback(props.conversationId!)();
+          }}>
           {formatTitle(props.name)}
         </div>
         <div
           className="trash"
           onClick={(e: React.MouseEvent<HTMLDivElement>) => {
             e.stopPropagation();
-            props.sendMessage(ArrakisRequestSchema.parse({
+            props.sendMessage({
               method: 'DeleteConversation',
               payload: DeleteConversationRequestSchema.parse({
                 conversationId: props.conversationId,
               }),
-            }), (response: ArrakisResponse) => {
-              const payload = ConversationListResponseSchema.parse(response.payload);
-              props.setConversations(payload.conversations);
+            } satisfies ArrakisRequest, (response: ConversationList) => {
+              props.setConversations(response.conversations);
             });
           }}
         >Delete</div>
-      </div>
+      </div >
     </>
   );
 };
@@ -1182,6 +1219,9 @@ function MainPage() {
   // Triggered/set when a modal is selected from the menu buttons on the left side of the screen
   const [selectedModal, setSelectedModal] = useState<Modal | null>(null);
 
+  type Page = 'chat' | 'usage';
+  const [currentPage, setCurrentPage] = useState<Page>('chat');
+
   // TODO: deprecated--this isn't being used anymore
   const [mouseInChat, setMouseInChat] = useState<boolean>(false);
 
@@ -1236,7 +1276,7 @@ function MainPage() {
     if (connectionStatus === 'connected') {
       sendMessage({
         method: 'Config',
-        payload: {
+        payload: UserConfigRequestSchema.parse({
           write: false,
           systemPrompt: '',
           apiKeys: {
@@ -1246,8 +1286,10 @@ function MainPage() {
             gemini: '',
             anthropic: '',
           }
-        } satisfies UserConfigRequest
-      } satisfies ArrakisRequest);
+        })
+      } satisfies ArrakisRequest, (response: UserConfig) => {
+        setUserConfig(response);
+      });
     }
   }, [connectionStatus]);
 
@@ -1272,6 +1314,7 @@ function MainPage() {
 
   // Start a new conversation
   const resetConversation = () => {
+    setCurrentPage('chat');
     setSelectedModal(null);
     setLoadedConversation(conversationDefault());
     setDisplayedTitle(titleDefault());
@@ -1428,7 +1471,8 @@ function MainPage() {
             message_type: 'User',
             api: model,
             system_prompt: '',
-            sequence: messages.length
+            sequence: messages.length,
+            date_created: new Date().toISOString(),
           } satisfies Message,
           {
             id: messages.length > 0 ? messages[messages.length - 1].id! + 2 : null,
@@ -1436,7 +1480,8 @@ function MainPage() {
             message_type: 'Assistant',
             api: model,
             system_prompt: '',
-            sequence: messages.length + 1
+            sequence: messages.length + 1,
+            date_created: new Date().toISOString(),
           } satisfies Message,
         ];
 
@@ -1452,7 +1497,21 @@ function MainPage() {
         sendMessage({
           method: 'Completion',
           payload: newConversation,
-        } satisfies ArrakisRequest);
+        } satisfies ArrakisRequest, (response: Completion) => {
+          setLoadedConversation((prev: Conversation) => {
+            const lcm = prev.messages;
+            const newMessages = [...lcm.slice(0, lcm.length - 1)];
+
+            const last = lcm[lcm.length - 1];
+            last.content += response.delta;
+            last.id = response.responseId;
+
+            newMessages[newMessages.length - 1].id = response.requestId;
+            newMessages.push(last);
+
+            return { id: response.conversationId, name: response.name, messages: newMessages };
+          });
+        });
 
         // Reset the chat input
         inputElement.innerHTML = '';
@@ -1467,7 +1526,9 @@ function MainPage() {
   useEffect(() => {
     sendMessage({
       method: 'ConversationList',
-    } satisfies ArrakisRequest);
+    } satisfies ArrakisRequest, (response: ConversationList) => {
+      setConversations(response.conversations);
+    });
   }, [selectedModal]);
 
   const getConversationCallback = (id: number) => {
@@ -1479,7 +1540,9 @@ function MainPage() {
         payload: {
           id,
         } satisfies LoadRequest
-      } satisfies ArrakisRequest);
+      } satisfies ArrakisRequest, (response: Conversation) => {
+        setLoadedConversation(response);
+      });
     };
   };
 
@@ -1670,6 +1733,7 @@ function MainPage() {
                   setConversations(conversations);
                   resetConversation();
                 }}
+                setCurrentPage={setCurrentPage}
                 scrollOffset={(() => {
                   if (scrollableRef.current) {
                     return [scrollableRef.current.scrollTop, scrollableRef.current.scrollLeft];
@@ -1762,6 +1826,8 @@ function MainPage() {
     );
   };
 
+  const headerHeight = 2.5; // rem
+
   // Main window component
   return (
     <div ref={messagesRef} className="scrollbar" onMouseEnter={() => setMouseInChat(true)} onMouseLeave={() => setMouseInChat(false)} style={{
@@ -1775,7 +1841,7 @@ function MainPage() {
       { /* Header */}
       <div style={{
         position: 'fixed',
-        height: '2.5rem',
+        height: `${headerHeight}rem`,
         width: '100%',
         display: 'flex',
         backgroundColor: '#F8F9F9',
@@ -1794,6 +1860,12 @@ function MainPage() {
           className="buttonHoverLight"
           onClick={() => setSelectedModal('search')}
           style={menuButtonStyle}>History</div>
+
+        { /* Toggle between Usage metrics page and the main chat */}
+        <div
+          className="buttonHoverLight"
+          onClick={() => setCurrentPage(currentPage === 'chat' ? 'usage' : 'chat')}
+          style={menuButtonStyle}>{currentPage === 'chat' ? 'Usage' : 'Chat'}</div>
 
         { /* Updating user configuration (as of writing, just API keys */}
         <div
@@ -1814,322 +1886,359 @@ function MainPage() {
         </div>
       </div>
 
-      {
-        /*
-         * This is primarily an onboarding component to check if the user has their API keys set
-         * Really, the app is useless without API keys so we're blocking them from moving forward 
-         * until they're configured.
-         *
-         * I think this same component will be used for manual configuration triggers later on
-         *
-         * TODO: this doesn't trigger as a separate component???
-         */
-      }
-      <div
-        style={{
-          pointerEvents: selectedModal === 'config' ? 'auto' : 'none',
-        }}>
-        {buildModalBackdrop(!needsOnboarding(userConfig) ? () => setSelectedModal(null) : () => { }, selectedModal === 'config')}
+      {currentPage === 'chat' ? (<>
+        {
+          /*
+           * This is primarily an onboarding component to check if the user has their API keys set
+           * Really, the app is useless without API keys so we're blocking them from moving forward 
+           * until they're configured.
+           *
+           * I think this same component will be used for manual configuration triggers later on
+           *
+           * TODO: this doesn't trigger as a separate component???
+           */
+        }
         <div
           style={{
-            transition: 'all 0.3s',
-            opacity: selectedModal === 'config' ? 1 : 0,
-            zIndex: 1000,
-            position: 'fixed',
+            pointerEvents: selectedModal === 'config' ? 'auto' : 'none',
           }}>
-          <UserConfigModal
-            visible={selectedModal === 'config'}
-            oldConfig={userConfig}
-            sendMessage={sendMessage}
-            setSelectedModal={setSelectedModal}
-            setModel={setModel}
-            setUserConfig={setUserConfig}
-          />
-        </div>
-      </div>
-
-      <MessageOptionsTooltip
-        mousePosition={mousePosition}
-        windowOpen={windowOpen}
-        hoveredSystemPrompts={hoveredSystemPrompts}
-      />
-
-      {
-        /*
-         * This is the main wrapper around the chat input that places it in the center of the screen
-         * TODO: revisit how much of this is actually needed
-         */
-      }
-      <div
-        ref={inputContainerRef}
-        style={{
-          position: 'fixed',
-          left: 'calc(50%)',
-          transform: 'translateX(-50%)',
-          bottom: '16px',
-          // -2rem for margins + padding on the sides
-          width: 'calc(100% - 3rem)',
-          // 45% of 1920
-          maxWidth: '864px',
-          minHeight: '16px',
-          padding: '12px',
-          border: '1px solid #EDEFEF',
-          backgroundColor: '#EDEFEF',
-          boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
-          borderRadius: '0.5rem',
-          fontSize: '14px',
-          overflow: 'hidden',
-          display: 'flex',
-          zIndex: selectedModal !== null ? 0 : 3,
-        }}
-      >
-        <div style={{
-          maxHeight: '25vh',
-          overflow: 'auto',
-          height: '100%',
-          width: '100%',
-          display: 'flex',
-          flexDirection: 'column',
-        }}>
+          {buildModalBackdrop(!needsOnboarding(userConfig) ? () => setSelectedModal(null) : () => { }, selectedModal === 'config')}
           <div
-            contentEditable={true}
-            id="chatInput"
-            onKeyDown={handleChatInput}
-            onKeyUp={() => {
-              if (inputContainerRef.current) {
-                setInputContainerHeight(_ => inputContainerRef.current!.getBoundingClientRect().height);
-              }
-            }}
             style={{
-              height: '100%',
-              width: '100%',
-              border: 0,
-              outline: 0,
-              resize: 'none',
-              alignSelf: 'center',
-              backgroundColor: 'transparent',
-            }}
-          />
+              transition: 'all 0.3s',
+              opacity: selectedModal === 'config' ? 1 : 0,
+              zIndex: 1000,
+              position: 'fixed',
+            }}>
+            <UserConfigModal
+              visible={selectedModal === 'config'}
+              oldConfig={userConfig}
+              sendMessage={sendMessage}
+              setSelectedModal={setSelectedModal}
+              setModel={setModel}
+              setUserConfig={setUserConfig}
+            />
+          </div>
         </div>
-      </div>
 
-      { /* Conversation/message list contents */}
-      <div style={{
-        position: 'relative',
-        maxWidth: '768px',
-        minWidth: '40vw',
-        left: 'calc(50% - 10px)', // calc to properly center with our 20px margins
-        transform: 'translate(-50%)',
-        marginLeft: '20px',
-        marginRight: '20px',
-        top: 'calc(2.5rem + 1px)',
-        flex: 1,
-        // distance of input container from bottom of screen +
-        // (2x from position relative) height of the input container +
-        // (2x from position relative) padding of the input container +
-        // arbitrary margin to keep things above the input container
-        marginBottom: `calc(16px + ${inputContainerHeight}px + 24px + 24px)`
-      }}>
-        {loadedConversation.messages.map((m, i) => {
-          // Lot of preprocessing here to properly render the messages into markdown into react components
-          // particularly, HTML characters need properly escaped in order to be processed correctly
-          // CSS styles also need to be changed--the generated HTML from markdown-it isn't conducive to React inline styling
-          // i.e., it's native to HTML rather than camelCase/JS-ified
+        <MessageOptionsTooltip
+          mousePosition={mousePosition}
+          windowOpen={windowOpen}
+          hoveredSystemPrompts={hoveredSystemPrompts}
+        />
 
-          const toPattern = new RegExp(
-            Object.keys(escapeToHTML)
-              .map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-              .join('|'),
-            'g'
-          );
-
-          // Escaping the incoming messages to be HTML friendly
-          // Particularly, if a message contains HTML it can message with the markdown-parsed output
-          // The escaping occurs here to keep from disambiguiation issues later in the pipeline
-          let content = m.content.replace(toPattern, function(match) {
-            return escapeToHTML[match];
-          });
-
-          // Markdown to HTML conversion
-          content = addMathDelimiters(content);
-          content = md.render(content) as string;
-
-          const reactElements = htmlToReactElements(content);
-
-          // Processing each react element to clean the contained text
-          // and fix up the CSS styles to be camelCase
-          function modifyElements(element: any): ReactElementOrText {
-            if (typeof element === 'string') {
-              let c = element as string;
-              const fromPattern = new RegExp(
-                Object.keys(escapeFromHTML)
-                  .map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-                  .join('|'),
-                'g'
-              );
-
-              return c.replace(fromPattern, function(match) {
-                return escapeFromHTML[match];
-              })
-            }
-
-            const props = element.props as React.PropsWithChildren<{ [key: string]: any }>;
-
-            const input = props.style;
-
-            if (input) {
-              if (typeof input !== "string") return null;
-
-              const styleObject: { [key: string]: any } = {};
-              const styleEntries = input.split(";").filter(Boolean);
-
-              for (const entry of styleEntries) {
-                const [property, value] = entry.split(":").map((s) => s.trim());
-                if (property && value) {
-                  // Convert CSS property to camelCase for React style
-                  const camelCaseProperty = property.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-                  styleObject[camelCaseProperty] = value;
+        {
+          /*
+           * This is the main wrapper around the chat input that places it in the center of the screen
+           * TODO: revisit how much of this is actually needed
+           */
+        }
+        <div
+          ref={inputContainerRef}
+          style={{
+            position: 'fixed',
+            left: 'calc(50%)',
+            transform: 'translateX(-50%)',
+            bottom: '16px',
+            // -2rem for margins + padding on the sides
+            width: 'calc(100% - 3rem)',
+            // 45% of 1920
+            maxWidth: '864px',
+            minHeight: '16px',
+            padding: '12px',
+            border: '1px solid #EDEFEF',
+            backgroundColor: '#EDEFEF',
+            boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+            borderRadius: '0.5rem',
+            fontSize: '14px',
+            overflow: 'hidden',
+            display: 'flex',
+            zIndex: selectedModal !== null ? 0 : 3,
+          }}
+        >
+          <div style={{
+            maxHeight: '25vh',
+            overflow: 'auto',
+            height: '100%',
+            width: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+          }}>
+            <div
+              contentEditable={true}
+              id="chatInput"
+              onKeyDown={handleChatInput}
+              onKeyUp={() => {
+                if (inputContainerRef.current) {
+                  setInputContainerHeight(_ => inputContainerRef.current!.getBoundingClientRect().height);
                 }
+              }}
+              style={{
+                height: '100%',
+                width: '100%',
+                border: 0,
+                outline: 0,
+                resize: 'none',
+                alignSelf: 'center',
+                backgroundColor: 'transparent',
+              }}
+            />
+          </div>
+        </div>
+
+        { /* Conversation/message list contents */}
+        <div style={{
+          position: 'relative',
+          maxWidth: '768px',
+          minWidth: '40vw',
+          left: 'calc(50% - 10px)', // calc to properly center with our 20px margins
+          transform: 'translate(-50%)',
+          marginLeft: '20px',
+          marginRight: '20px',
+          top: 'calc(2.5rem + 1px)',
+          flex: 1,
+          // distance of input container from bottom of screen +
+          // (2x from position relative) height of the input container +
+          // (2x from position relative) padding of the input container +
+          // arbitrary margin to keep things above the input container
+          marginBottom: `calc(16px + ${inputContainerHeight}px + 24px + 24px)`
+        }}>
+          {loadedConversation.messages.map((m, i) => {
+            // Lot of preprocessing here to properly render the messages into markdown into react components
+            // particularly, HTML characters need properly escaped in order to be processed correctly
+            // CSS styles also need to be changed--the generated HTML from markdown-it isn't conducive to React inline styling
+            // i.e., it's native to HTML rather than camelCase/JS-ified
+
+            const toPattern = new RegExp(
+              Object.keys(escapeToHTML)
+                .map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+                .join('|'),
+              'g'
+            );
+
+            // Escaping the incoming messages to be HTML friendly
+            // Particularly, if a message contains HTML it can message with the markdown-parsed output
+            // The escaping occurs here to keep from disambiguiation issues later in the pipeline
+            let content = m.content.replace(toPattern, function(match) {
+              return escapeToHTML[match];
+            });
+
+            // Markdown to HTML conversion
+            content = addMathDelimiters(content);
+            content = md.render(content) as string;
+
+            const reactElements = htmlToReactElements(content);
+
+            // Processing each react element to clean the contained text
+            // and fix up the CSS styles to be camelCase
+            function modifyElements(element: any): ReactElementOrText {
+              if (typeof element === 'string') {
+                let c = element as string;
+                const fromPattern = new RegExp(
+                  Object.keys(escapeFromHTML)
+                    .map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+                    .join('|'),
+                  'g'
+                );
+
+                return c.replace(fromPattern, function(match) {
+                  return escapeFromHTML[match];
+                })
               }
 
-              return React.cloneElement(element, {
-                style: styleObject,
-                children: React.Children.map(props.children, (child) =>
-                  React.isValidElement(child) ? modifyElements(child) : child
-                ),
-              });
-            }
+              const props = element.props as React.PropsWithChildren<{ [key: string]: any }>;
 
-            if (props.children) {
-              return React.createElement(
-                element.type,
-                element.props,
-                React.Children.map(props.children, modifyElements)
-              );
-            }
+              const input = props.style;
 
-            return element;
-          };
+              if (input) {
+                if (typeof input !== "string") return null;
 
-          const unescapedElements = reactElements.map(modifyElements);
+                const styleObject: { [key: string]: any } = {};
+                const styleEntries = input.split(";").filter(Boolean);
 
-          const isUser = m.message_type === 'User';
-
-          // Parsing the system prompt references for cleaner display
-          // TODO: This streaming setup really needs to be cleaned
-          //       This is far too much work to be doing when streaming completions
-          const parser = new DOMParser();
-          const doc = parser.parseFromString(m.system_prompt, 'text/xml');
-
-          const referenceElements = doc.querySelectorAll('reference');
-
-          const references: string[] = Array.from(referenceElements).map((prop: any) =>
-            prop.textContent?.trim() ?? '');
-
-          // Actually build the component which holds the chat history + all the contained messages
-          return (
-            <>
-              <div style={{
-                backgroundColor: isUser ? '#E8E9E9' : '',
-                borderRadius: '0.5rem',
-                margin: '2rem 0.25rem 1.5rem 0.25rem',
-                padding: '0.01rem 0',
-                marginLeft: isUser ? 'auto' : '',
-                position: 'relative',
-                fontSize: '14px',
-              }}>
-                {
-                  /* The actual message elements */
-                  i < loadedConversation.messages.length - 1 || unescapedElements.length > 0 ? unescapedElements : (
-                    <div
-                      className={`text-placeholder`}
-                      aria-live="polite"
-                    >
-                      {'Thinking...'}
-                    </div>
-                  )
+                for (const entry of styleEntries) {
+                  const [property, value] = entry.split(":").map((s) => s.trim());
+                  if (property && value) {
+                    // Convert CSS property to camelCase for React style
+                    const camelCaseProperty = property.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+                    styleObject[camelCaseProperty] = value;
+                  }
                 }
-                {isUser ? '' : (
-                  <div>
-                    <p
-                      className="messageOptions"
-                      style={{
-                        position: 'absolute',
-                        transform: 'translateY(calc(-100% + 0.5rem))',
-                        userSelect: 'none',
-                        cursor: 'pointer',
-                        display: 'flex',
-                      }}>
-                      <div>•</div>
-                      <div style={{
-                        width: 'fit-content',
-                        overflow: 'hidden',
-                      }}>
-                        <div
-                          style={{
-                            display: 'flex',
-                          }}
-                          className="messageOptionsRow"
-                        >
-                          <div
-                            style={{
-                              padding: '0 0.5rem',
-                            }}
-                            onClick={() => {
-                              // Regeneration option for a given message
-                              // This forks the existing conversation and saves the new conversation as a new entry in the listing
-                              // All conversation up to the regenerated message is kept, all conversation history after is left behind in the old conversation
 
-                              sendMessage(ArrakisRequestSchema.parse({
-                                method: 'Fork',
-                                payload: ForkRequestSchema.parse({
-                                  conversationId: loadedConversation.id,
-                                  sequence: m.sequence
-                                })
-                              }));
+                return React.cloneElement(element, {
+                  style: styleObject,
+                  children: React.Children.map(props.children, (child) =>
+                    React.isValidElement(child) ? modifyElements(child) : child
+                  ),
+                });
+              }
 
-                              const conversation = {
-                                ...loadedConversation,
-                                messages: loadedConversation.messages.slice(0, m.sequence + 1),
-                              };
+              if (props.children) {
+                return React.createElement(
+                  element.type,
+                  element.props,
+                  React.Children.map(props.children, modifyElements)
+                );
+              }
 
-                              let last = conversation.messages[conversation.messages.length - 1];
+              return element;
+            };
 
-                              // Cleaning message metadata for the new conversation entry
-                              last.content = '';
-                              last.id = null;
-                              last.message_type = 'Assistant';
-                              last.system_prompt = userConfig ? userConfig.systemPrompt : '';
-                              last.api = model;
+            const unescapedElements = reactElements.map(modifyElements);
 
-                              conversation.messages[conversation.messages.length - 1] = last;
+            const isUser = m.message_type === 'User';
 
-                              setLoadedConversation(conversation);
-                            }}
-                            className="messageOptionsItem"
-                          >Regenerate</div>
-                          <div
-                            onMouseEnter={() => {
-                              setWindowOpen(true);
-                              setHoveredSystemPrompts(references);
-                            }}
-                            onMouseLeave={() => setWindowOpen(false)}
-                            onMouseMove={(e: React.MouseEvent<HTMLDivElement>) => setMousePosition([e.clientX, e.clientY])}
-                            style={{
-                              cursor: 'help',
-                              userSelect: 'none',
-                            }}
-                          >References</div>
-                        </div>
+            // Parsing the system prompt references for cleaner display
+            // TODO: This streaming setup really needs to be cleaned
+            //       This is far too much work to be doing when streaming completions
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(m.system_prompt, 'text/xml');
+
+            const referenceElements = doc.querySelectorAll('reference');
+
+            const references: string[] = Array.from(referenceElements).map((prop: any) =>
+              prop.textContent?.trim() ?? '');
+
+            // Actually build the component which holds the chat history + all the contained messages
+            return (
+              <>
+                <div style={{
+                  backgroundColor: isUser ? '#E8E9E9' : '',
+                  borderRadius: '0.5rem',
+                  margin: '2rem 0.25rem 1.5rem 0.25rem',
+                  padding: '0.01rem 0',
+                  marginLeft: isUser ? 'auto' : '',
+                  position: 'relative',
+                  fontSize: '14px',
+                }}>
+                  {
+                    /* The actual message elements */
+                    i < loadedConversation.messages.length - 1 || unescapedElements.length > 0 ? unescapedElements : (
+                      <div
+                        className={`text-placeholder`}
+                        aria-live="polite"
+                      >
+                        {'Thinking...'}
                       </div>
-                    </p>
-                  </div>
-                )}
-              </div>
-            </>
-          );
-        })}
-      </div>
+                    )
+                  }
+                  {isUser ? '' : (
+                    <div>
+                      <p
+                        className="messageOptions"
+                        style={{
+                          position: 'absolute',
+                          transform: 'translateY(calc(-100% + 0.5rem))',
+                          userSelect: 'none',
+                          cursor: 'pointer',
+                          display: 'flex',
+                        }}>
+                        <div>•</div>
+                        <div style={{
+                          width: 'fit-content',
+                          overflow: 'hidden',
+                        }}>
+                          <div
+                            style={{
+                              display: 'flex',
+                            }}
+                            className="messageOptionsRow"
+                          >
+                            <div
+                              style={{
+                                padding: '0 0.5rem',
+                              }}
+                              onClick={() => {
+                                // Regeneration option for a given message
+                                // This forks the existing conversation and saves the new conversation as a new entry in the listing
+                                // All conversation up to the regenerated message is kept, all conversation history after is left behind in the old conversation
+
+                                sendMessage({
+                                  method: 'Fork',
+                                  payload: ForkRequestSchema.parse({
+                                    conversationId: loadedConversation.id,
+                                    sequence: m.sequence
+                                  })
+                                } satisfies ArrakisRequest);
+
+                                const conversation = {
+                                  ...loadedConversation,
+                                  messages: loadedConversation.messages.slice(0, m.sequence + 1),
+                                };
+
+                                let last = conversation.messages[conversation.messages.length - 1];
+
+                                // Cleaning message metadata for the new conversation entry
+                                last.content = '';
+                                last.id = null;
+                                last.message_type = 'Assistant';
+                                last.system_prompt = userConfig ? userConfig.systemPrompt : '';
+                                last.api = model;
+
+                                conversation.messages[conversation.messages.length - 1] = last;
+
+                                setLoadedConversation(conversation);
+                              }}
+                              className="messageOptionsItem"
+                            >Regenerate</div>
+                            <div
+                              onMouseEnter={() => {
+                                setWindowOpen(true);
+                                setHoveredSystemPrompts(references);
+                              }}
+                              onMouseLeave={() => setWindowOpen(false)}
+                              onMouseMove={(e: React.MouseEvent<HTMLDivElement>) => setMousePosition([e.clientX, e.clientY])}
+                              style={{
+                                cursor: 'help',
+                                userSelect: 'none',
+                              }}
+                            >References</div>
+                          </div>
+                        </div>
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </>
+            );
+          })}
+        </div>
+      </>
+      ) : (
+        <div
+          style={{
+            top: `${headerHeight}rem`,
+            padding: '2.5rem',
+            width: 'calc(100% - 5rem)', // subtracting 2 * padding
+            position: 'relative',
+          }}
+        >
+          <ResponsiveContainer width="66%" height={500}>
+            <BarChart data={[0, 2, 3, 4, 5].map((value, index) => ({
+              time: index, // or whatever your x-axis unit is
+              value: value
+            }))}
+              {...{ marginBottom: '5rem' }}
+            >
+              <XAxis dataKey="time" />
+              <YAxis hide={true} />
+              <Tooltip
+                contentStyle={{
+                  borderRadius: '0.5rem',
+                  boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+                  border: 0,
+                }}
+              />
+              <Bar
+                dataKey="value"
+                fill="#45B6E2"
+                activeBar={{ fill: '#4A90E2' }}
+                radius={[4, 4, 0, 0]}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div >
   );
 }

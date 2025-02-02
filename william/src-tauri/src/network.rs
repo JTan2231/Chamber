@@ -1,6 +1,5 @@
 use std::env;
 use std::io::BufRead;
-use std::net::{TcpStream, ToSocketAddrs};
 
 use chamber_common::{error, info, Logger};
 
@@ -119,6 +118,7 @@ fn get_openai_request_params(
                 api,
                 system_prompt,
                 sequence: -1,
+                date_created: String::new(),
             }]
         }
         .iter()
@@ -154,6 +154,7 @@ fn get_groq_request_params(
             api: API::Groq(GroqModel::LLaMA70B),
             system_prompt,
             sequence: -1,
+            date_created: String::new(),
         }]
         .iter()
         .chain(chat_history.iter())
@@ -401,6 +402,7 @@ pub fn prompt_stream(
         api,
         system_prompt: system_prompt.to_string(),
         sequence: -1,
+        date_created: String::new(),
     })
 }
 
@@ -432,6 +434,7 @@ pub fn prompt(
         api,
         system_prompt: system_prompt.to_string(),
         sequence: -1,
+        date_created: String::new(),
     })
 }
 
@@ -454,6 +457,7 @@ mod tests {
             api,
             system_prompt: "".to_string(),
             sequence: -1,
+            date_created: String::new(),
         }
     }
 
@@ -517,6 +521,7 @@ mod tests {
                 api: API::OpenAI(OpenAIModel::GPT4o),
                 system_prompt: "".to_string(),
                 sequence: -1,
+                date_created: String::new(),
             },
             Message {
                 id: None,
@@ -525,6 +530,7 @@ mod tests {
                 api: API::OpenAI(OpenAIModel::GPT4o),
                 system_prompt: "".to_string(),
                 sequence: -1,
+                date_created: String::new(),
             },
         ];
 
