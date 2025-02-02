@@ -212,7 +212,24 @@ impl EmbeddingCache {
             }
             None => {
                 self.load_embedding_block(embedding_id)?;
-                self.embeddings.get(&embedding_id).unwrap().clone()
+                // TODO: this was triggering panics _only in release builds_
+                //       and I still have no idea why
+                match self.embeddings.get(&embedding_id) {
+                    Some(e) => e.clone(),
+                    None => {
+                        error!(
+                            "Dewey: Cache: Embedding id {} doesn't exist in the blocks!",
+                            embedding_id
+                        );
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!(
+                                "Cache panic: Embedding id {} doesn't exist in the blocks!",
+                                embedding_id,
+                            ),
+                        ));
+                    }
+                }
             }
         };
 

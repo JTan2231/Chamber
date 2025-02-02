@@ -2,7 +2,7 @@ use rusqlite::params;
 use tauri::async_runtime::spawn;
 use tauri::{TitleBarStyle, WebviewUrl, WebviewWindowBuilder};
 
-use chamber_common::{error, get_config_dir, get_local_dir, get_root_dir, lprint, Logger};
+use chamber_common::{error, get_config_dir, get_local_dir, get_root_dir, info, lprint, Logger};
 use dewey_lib::Dewey;
 
 use crate::types::*;
@@ -384,7 +384,9 @@ fn build_system_prompt(
         // TODO: error handling
         let contents = std::fs::read_to_string(&source.filepath).unwrap();
 
-        let contents = contents[..std::cmp::min(512, contents.len())].to_string();
+        info!("contents: {}", contents);
+
+        let contents = contents.chars().take(512).collect::<String>();
         prompt.push_str(&format!("<reference>{}</reference>", contents));
     }
 

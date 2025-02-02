@@ -70,13 +70,24 @@ impl Logger {
     pub fn init(filename: &str) -> &'static Logger {
         unsafe {
             INIT.call_once(|| {
-                INSTANCE = Some(Logger {
+                let logger = Logger {
                     file: std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
                         .open(filename)
                         .expect("Failed to open log file"),
-                });
+                };
+
+                // Set up panic hook when initializing logger
+                let file_clone = logger.file.try_clone().expect("Failed to clone file");
+                std::panic::set_hook(Box::new(move |panic_info| {
+                    let mut file = file_clone.try_clone().expect("Failed to clone panic file");
+                    let timestamp = chrono::Local::now();
+                    let message = format!("{} [PANIC]: {:?}", timestamp, panic_info);
+                    writeln!(file, "{}", message).expect("Failed to write panic info");
+                }));
+
+                INSTANCE = Some(logger);
             });
 
             INSTANCE.as_ref().unwrap()
