@@ -269,8 +269,7 @@ CREATE TABLE IF NOT EXISTS messages (
     api_config_id INTEGER NOT NULL,
     system_prompt TEXT NOT NULL,
     date_created TIMESTAMP NOT NULL,
-    FOREIGN KEY (message_type_id) REFERENCES message_types(id),
-    FOREIGN KEY (api_config_id) REFERENCES api_configurations(id)
+    FOREIGN KEY (message_type_id) REFERENCES message_types(id)
 );
 
 CREATE TABLE IF NOT EXISTS message_embeddings (
@@ -351,7 +350,13 @@ fn add_message_embedding(
     )
     .unwrap();
 
-    dewey.unwrap().add_embedding(filepath.to_string())?;
+    // TODO: conversations need cleaned before being processed
+    match dewey.unwrap().add_embedding(filepath.to_string()) {
+        Ok(_) => {}
+        Err(e) => {
+            lprint!(error, "Error processing message {}: {}", filepath, e);
+        }
+    };
 
     Ok(())
 }
@@ -388,8 +393,6 @@ fn build_system_prompt(
 
         // TODO: error handling
         let contents = std::fs::read_to_string(&source.filepath).unwrap();
-
-        info!("contents: {}", contents);
 
         let contents = contents.chars().take(512).collect::<String>();
         prompt.push_str(&format!("<reference>{}</reference>", contents));
@@ -595,8 +598,6 @@ fn completion(
                 let conversation_id = conversation.id.unwrap();
                 let response_id = last.id.unwrap();
                 let conversation_name = conversation.name.clone();
-
-                println!("delta: {}", message);
 
                 ws_send!(
                     websocket,
@@ -860,10 +861,7 @@ fn set_keys(user_config: &UserConfig) {
 }
 
 // TODO: there is zero error handling around here lol
-async fn websocket_server() {
-    setup();
-    lprint!(info, "Workspace initialized");
-
+async fn websocket_server(db: rusqlite::Connection, dewey: Option<dewey_lib::Dewey>) {
     // Tokenizer using the GPT-4o token mapping from OpenAI
     let tokenizer_ = std::sync::Arc::new(std::sync::Mutex::new(
         match tiktoken::Tokenizer::new().await {
@@ -877,36 +875,10 @@ async fn websocket_server() {
 
     lprint!(info, "Tokenizer initialized");
 
-    // The SQLite database is used to store conversations/messages + the like
-    // Probably want a more detailed description here
-    let db_ = std::sync::Arc::new(std::sync::Mutex::new(
-        rusqlite::Connection::open(get_local_dir().join("william.sqlite"))
-            .expect("Failed to open database"),
-    ));
-
-    lprint!(info, "SQLite connection established");
-
-    // DB initialization
-    safe_lock!(db_)
-        .execute_batch(DB_SETUP_STATEMENTS)
-        .expect("Failed to initialize database");
-
-    lprint!(info, "SQLite database initialized");
-
-    lprint!(info, "Setting environment variables...");
-    let user_config = get_config(&safe_lock!(db_));
-    set_keys(&user_config);
-
-    lprint!(info, "Environment variables set");
+    let db_ = std::sync::Arc::new(std::sync::Mutex::new(db));
 
     // Embeddings are retrieved from the OpenAI API and stored locally using Dewey as the index
-    let dewey_ = std::sync::Arc::new(std::sync::Mutex::new(match dewey_lib::Dewey::new() {
-        Ok(d) => Some(d),
-        Err(e) => {
-            lprint!(error, "Error initializing Dewey: {}; ignoring...", e);
-            None
-        }
-    }));
+    let dewey_ = std::sync::Arc::new(std::sync::Mutex::new(dewey));
 
     lprint!(info, "Dewey initialized");
 
@@ -1241,34 +1213,44 @@ async fn websocket_server() {
 
                         let tokenizer = tokenizer.as_ref().unwrap();
 
-                        let mut stmt = db
-                            .prepare(
-                                "SELECT
-                                id,
-                                message_type_id,
-                                content,
-                                api_config_id,
-                                system_prompt,
-                                date(date_created)
-                             FROM messages
-                             WHERE date_created BETWEEN ?1 AND ?2
-                             ORDER BY date_created ASC",
-                            )
-                            .unwrap();
+                        let mut stmt = match db.prepare(
+                            "SELECT
+                                    m.id,
+                                    m.message_type_id,
+                                    m.content,
+                                    models.provider as provider,
+                                    models.name as model,
+                                    m.system_prompt,
+                                    p.sequence,
+                                    date(m.date_created) as date_created
+                                FROM messages m
+                                JOIN models ON m.api_config_id = models.id
+                                JOIN paths p ON m.id = p.message_id
+                                WHERE m.date_created BETWEEN ?1 AND ?2
+                                ORDER BY m.date_created ASC",
+                        ) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                lprint!(error, "wtf: {}", e);
+                                panic!("wtf: {}", e);
+                            }
+                        };
 
                         let messages = match stmt.query_map(
                             params![payload.date_from, payload.date_to],
                             |row| {
                                 Ok(Message {
                                     id: row.get(0)?,
-                                    // TODO: This should come from the db
-                                    message_type: MessageType::User,
+                                    message_type: MessageType::from_id(row.get(1)?).unwrap(),
                                     content: row.get(2)?,
-                                    api: payload.api,
-                                    system_prompt: row.get(4)?,
-                                    // TODO: This should come from the db, if at all
-                                    sequence: -1,
-                                    date_created: row.get(5)?,
+                                    api: API::from_strings(
+                                        &row.get::<_, String>(3)?,
+                                        &row.get::<_, String>(4)?,
+                                    )
+                                    .unwrap(),
+                                    system_prompt: row.get(5)?,
+                                    sequence: row.get(6)?,
+                                    date_created: row.get(7)?,
                                 })
                             },
                         ) {
@@ -1284,7 +1266,13 @@ async fn websocket_server() {
                                 continue;
                             }
                         }
-                        .map(|m| m.unwrap())
+                        .map(|m| match m {
+                            Ok(message) => message,
+                            Err(e) => {
+                                lprint!(error, "{}", e);
+                                panic!("idk man");
+                            }
+                        })
                         .collect::<Vec<Message>>();
 
                         let mut tokens = Vec::new();
@@ -1325,9 +1313,40 @@ async fn websocket_server() {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            setup();
+            lprint!(info, "Workspace initialized");
+
+            // The SQLite database is used to store conversations/messages + the like
+            // Probably want a more detailed description here
+            let db = rusqlite::Connection::open(get_local_dir().join("william.sqlite"))
+                .expect("Failed to open database");
+
+            lprint!(info, "SQLite connection established");
+
+            // DB initialization
+            db.execute_batch(DB_SETUP_STATEMENTS)
+                .expect("Failed to initialize database");
+
+            lprint!(info, "SQLite database initialized");
+
+            lprint!(info, "Setting environment variables...");
+            let user_config = get_config(&db);
+            set_keys(&user_config);
+
+            lprint!(info, "Environment variables set");
+
+            let dewey = match dewey_lib::Dewey::new() {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    lprint!(error, "Error initializing Dewey: {}; ignoring...", e);
+                    None
+                }
+            };
+
             spawn(async move {
-                websocket_server().await;
+                websocket_server(db, dewey).await;
             });
+
             let win_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("William")
                 .inner_size(800.0, 600.0);

@@ -91,6 +91,10 @@ impl Tokenizer {
     }
 
     pub fn encode(&self, piece: &str) -> Vec<Rank> {
+        if piece.len() == 0 {
+            return Vec::new();
+        }
+
         byte_pair_encode(piece.as_bytes(), &self.ranks)
     }
 }

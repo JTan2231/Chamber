@@ -302,6 +302,7 @@ impl HNSW {
                 )?;
             }
 
+            // Standard probability check to see if a node is lucky enough to hit the upper layers
             if prob < self.thresholds[j] || self.entry_id.is_none() {
                 HNSW::insert_into_layer(
                     cache,
@@ -312,7 +313,9 @@ impl HNSW {
                 )?;
 
                 carryover = eid;
-            } else if carryover.is_some() {
+            }
+            // Otherwise, go ahead and insert if the node has already been inserted above
+            else if carryover.is_some() {
                 HNSW::insert_into_layer(
                     cache,
                     carryover.unwrap(),

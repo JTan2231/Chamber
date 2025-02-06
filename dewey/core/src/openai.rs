@@ -349,7 +349,7 @@ pub fn embed_bulk(sources: &Vec<EmbeddingSource>) -> Result<Vec<Embedding>, std:
 
 pub fn embed(source: &EmbeddingSource) -> Result<Embedding, std::io::Error> {
     let query = read_source(source)?;
-    if query.len() == 0 || query.len() > TOKEN_LIMIT {
+    if query.len() == 0 {
         error!("Invalid query size: {}", query.len());
         error!("Query must be between 1 and {} characters", TOKEN_LIMIT);
         return Err(std::io::Error::new(
@@ -357,6 +357,16 @@ pub fn embed(source: &EmbeddingSource) -> Result<Embedding, std::io::Error> {
             "Failed to read source",
         ));
     }
+
+    let query = if query.len() >= 8192 {
+        error!(
+            "Dewey: Embed received a source that's too long! Trimming {:?}",
+            source
+        );
+        query.chars().take(8191).collect()
+    } else {
+        query
+    };
 
     let api_call = if cfg!(feature = "regression") {
         TestApiCall::embedding_api_call

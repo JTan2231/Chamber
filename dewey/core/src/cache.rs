@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 use chamber_common::Logger;
-use chamber_common::{error, info};
+use chamber_common::{error, info, lprint};
 
 use crate::dbio::{get_directory, read_embedding_block, BLOCK_SIZE};
 use crate::openai::Embedding;
@@ -25,22 +25,31 @@ pub struct Node<T> {
     back: Link<T>,
 }
 
-impl<T: Clone> Node<T> {
-    pub fn detach(node: &Arc<Mutex<Node<T>>>) -> T {
+impl<T: Clone> LinkedList<T> {
+    pub fn detach(&mut self, node: &Arc<Mutex<Node<T>>>) -> T {
         let node_lock = node.lock().unwrap();
         let front = node_lock.front.clone();
         let back = node_lock.back.clone();
         let elem = node_lock.elem.clone();
 
+        // Update neighboring nodes
         if let Some(front_node) = front.as_ref() {
             let mut front_lock = front_node.lock().unwrap();
             front_lock.back = back.clone();
+        } else {
+            // This was the back node
+            self.back = back.clone();
         }
 
         if let Some(back_node) = back.as_ref() {
             let mut back_lock = back_node.lock().unwrap();
             back_lock.front = front.clone();
+        } else {
+            // This was the front node
+            self.front = front.clone();
         }
+
+        self.len -= 1;
         elem
     }
 }
@@ -119,12 +128,12 @@ impl<T: Clone> Drop for LinkedList<T> {
 pub struct EmbeddingCache {
     lru: LinkedList<u32>,
     node_map: HashMap<u32, Arc<Mutex<Node<u32>>>>,
-    embeddings: HashMap<u32, Embedding>,
-    directory: HashMap<u32, u64>,
 
-    // used to keep track of which embeddings are invalid from file updates
-    // dirty embeddings are accounted for and removed on cache reads
-    dirty_embeddings: HashSet<u32>,
+    // Embeddings that are currently loaded in the cache
+    embeddings: HashMap<u32, Embedding>,
+
+    // Embedding ID -> block number
+    directory: HashMap<u32, u64>,
 
     // ideally this is some multiple of the number of embeddings in a block
     // this _must_ be greater or equal to the number of embeddings in a block
@@ -150,12 +159,13 @@ impl EmbeddingCache {
             lru: LinkedList::new(),
             node_map: HashMap::new(),
             embeddings: HashMap::new(),
-            dirty_embeddings: HashSet::new(),
             directory: directory.id_map,
             max_size,
         })
     }
 
+    /// Load an embedding's host block into the cache
+    /// This relies on the directory being up to date
     fn load_embedding_block(&mut self, embedding_id: u32) -> Result<(), std::io::Error> {
         let block_number = match self.directory.get(&embedding_id) {
             Some(block_number) => *block_number,
@@ -168,7 +178,7 @@ impl EmbeddingCache {
         };
 
         let embeddings = read_embedding_block(block_number)?.embeddings;
-        for e in embeddings {
+        for e in embeddings.iter() {
             if self.lru.len >= self.max_size as usize {
                 let popped = self.lru.pop_back().unwrap();
                 self.embeddings.remove(&popped);
@@ -177,14 +187,21 @@ impl EmbeddingCache {
 
             let id = e.id as u32;
             if let Some(node) = self.node_map.get(&id) {
-                Node::detach(node);
-                self.lru.len -= 1;
+                self.lru.detach(node);
             }
 
             let new_node = self.lru.push_front(id);
-            self.embeddings.insert(id, e);
+            self.embeddings.insert(id, e.clone());
             self.node_map.insert(id, new_node);
         }
+
+        lprint!(
+            info,
+            "Loaded {} embeddings, {} embeddings in mapping, {} in LRU",
+            embeddings.len(),
+            self.embeddings.len(),
+            self.lru.len
+        );
 
         Ok(())
     }
@@ -200,16 +217,7 @@ impl EmbeddingCache {
     pub fn get(&mut self, embedding_id: u32) -> Result<Box<Embedding>, std::io::Error> {
         // fetch the embedding
         let embedding = match self.embeddings.get(&embedding_id).cloned() {
-            Some(embedding) => {
-                if self.dirty_embeddings.contains(&embedding_id) {
-                    self.load_embedding_block(embedding_id)?;
-                    self.dirty_embeddings.remove(&embedding_id);
-
-                    self.embeddings.get(&embedding_id).unwrap().clone()
-                } else {
-                    embedding
-                }
-            }
+            Some(embedding) => embedding,
             None => {
                 self.load_embedding_block(embedding_id)?;
                 // TODO: this was triggering panics _only in release builds_
@@ -217,10 +225,12 @@ impl EmbeddingCache {
                 match self.embeddings.get(&embedding_id) {
                     Some(e) => e.clone(),
                     None => {
-                        error!(
-                            "Dewey: Cache: Embedding id {} doesn't exist in the blocks!",
+                        lprint!(
+                            error,
+                            "Dewey: Cache: Embedding id {} doesn't exist in the loaded block!",
                             embedding_id
                         );
+
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::NotFound,
                             format!(
@@ -236,7 +246,7 @@ impl EmbeddingCache {
         let node = self.node_map.get(&embedding_id).unwrap();
         let new_node = self.lru.push_front(embedding_id);
 
-        Node::detach(node);
+        self.lru.detach(node);
 
         self.node_map.insert(embedding_id, new_node);
 

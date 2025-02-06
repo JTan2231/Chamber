@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use chamber_common::Logger;
-use chamber_common::{error, get_data_dir, get_local_dir, info};
+use chamber_common::{error, get_data_dir, get_local_dir, info, lprint};
 use serialize_macros::Serialize;
 
 use crate::cache::EmbeddingCache;
@@ -442,6 +442,7 @@ pub fn get_directory() -> Result<Directory, std::io::Error> {
                 return Err(e);
             }
         };
+
     let directory = directory
         .split("\n")
         .filter(|l| !l.is_empty())
@@ -455,8 +456,13 @@ pub fn get_directory() -> Result<Directory, std::io::Error> {
         })
         .collect::<Vec<_>>();
 
+    // Embedding ID -> block number
     let mut id_map = HashMap::new();
+
+    // Embedding source filepath -> block number
     let mut file_map = HashMap::new();
+
+    // Embedding source filepath -> embedding ID
     let mut file_id_map = HashMap::new();
 
     for entry in directory.iter() {
@@ -577,11 +583,10 @@ pub fn add_new_embedding(embedding: &mut Embedding) -> Result<(), std::io::Error
     embedding.id = get_next_id()?;
     block.embeddings.push(embedding.clone());
 
-    block.to_file(&format!(
-        "{}/{}",
-        get_data_dir().to_str().unwrap(),
-        block.block
-    ))?;
+    let filepath = format!("{}/{}", get_data_dir().to_str().unwrap(), block.block);
+    block.to_file(&filepath)?;
+
+    lprint!(info, "Saved embedding to {}", filepath);
 
     let mut directory = std::fs::OpenOptions::new()
         .append(true)
@@ -592,5 +597,9 @@ pub fn add_new_embedding(embedding: &mut Embedding) -> Result<(), std::io::Error
         directory,
         "\n{} {} {}",
         embedding.id, embedding.source_file.filepath, last_block_number
-    )
+    )?;
+
+    lprint!(info, "Directory updated");
+
+    Ok(())
 }

@@ -22,8 +22,8 @@ pub struct Dewey {
 }
 
 impl Dewey {
-    pub fn new() -> Result<Self, std::io::Error> {
-        crate::config::setup();
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        crate::config::setup()?;
 
         lprint!(info, "Dewey: Verifying OpenAI API key...");
         let key = std::env::var("OPENAI_API_KEY").map_err(|e| {
@@ -34,10 +34,10 @@ impl Dewey {
         })?;
 
         if key.is_empty() {
-            return Err(std::io::Error::new(
+            return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "OpenAI API key is empty",
-            ));
+            )));
         }
 
         // We're rebuilding the index from the blocks for now because it's assumed that the number
@@ -70,8 +70,6 @@ impl Dewey {
                 return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
             }
         };
-
-        lprint!(info, "Dewey: Query embedding created");
 
         let filters = filters
             .iter()
@@ -126,12 +124,16 @@ impl Dewey {
             }
         };
 
+        lprint!(info, "Created embedding with id: {}", embedding.id);
+        lprint!(info, "Finished writing embedding to file system");
+
         self.cache.refresh_directory()?;
+        lprint!(info, "Refreshed cache directory");
 
         match self.index.insert(&mut self.cache, &embedding) {
             Ok(_) => {}
             Err(e) => {
-                error!("error adding embedding to index: {}", e);
+                error!("Error adding embedding to index: {}", e);
                 return Err(e);
             }
         };
@@ -146,6 +148,8 @@ impl Dewey {
                 return Err(e);
             }
         };
+
+        lprint!(info, "Updated index with new embedding");
 
         Ok(())
     }

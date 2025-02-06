@@ -35,12 +35,12 @@ fn touch_file(path: &std::path::PathBuf) {
 //
 // `chamber_common::Workspace` _must_ be setup before this function is run
 // otherwise the `get_*_dir` functions won't be correctly mapped
-pub fn setup() {
+pub fn setup() -> Result<(), Box<dyn std::error::Error>> {
     match std::env::var("OPENAI_API_KEY") {
         Ok(_) => (),
-        Err(_) => {
+        Err(e) => {
             lprint!(error, "Dewey OPENAI_API_KEY environment variable not set");
-            panic!("OPENAI_API_KEY environment variable not set");
+            return Err(Box::new(e));
         }
     }
 
@@ -55,4 +55,6 @@ pub fn setup() {
     touch_file(&local_path.join("id_counter"));
     touch_file(&config_path.join("ledger"));
     touch_file(&config_path.join("rules"));
+
+    Ok(())
 }

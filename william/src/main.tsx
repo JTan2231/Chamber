@@ -134,7 +134,7 @@ const PreviewRequestSchema = z.object({
 
 const UsageRequestSchema = z.object({
   conversationId: z.number().int().optional(),
-  api: z.string(),
+  api: APISchema,
   dateFrom: z.string(),
   dateTo: z.string(),
 });
@@ -1235,6 +1235,10 @@ function MainPage() {
   const [hoveredSystemPrompts, setHoveredSystemPrompts] = useState<string[]>(['']);
   const [mousePosition, setMousePosition] = useState<number[]>([0, 0]);
 
+  // State variables for the usage page
+  // This should really end up being its own component, but we'll run with this for now
+  const [usagePayload, setUsagePayload] = useState<Usage>({ tokenUsage: [], dates: [] });
+
   // The conversation title card in the top left
   // TODO: this is a little unstable and needs debugging when conversation names are changing around
   const titleDefault = () => ({ title: '', index: 0 });
@@ -1864,7 +1868,24 @@ function MainPage() {
         { /* Toggle between Usage metrics page and the main chat */}
         <div
           className="buttonHoverLight"
-          onClick={() => setCurrentPage(currentPage === 'chat' ? 'usage' : 'chat')}
+          onClick={() => {
+            if (currentPage === 'chat') {
+              setCurrentPage('usage');
+              sendMessage({
+                method: 'Usage',
+                payload: UsageRequestSchema.parse({
+                  api: model,
+                  dateFrom: '1970-01-01 00:00:00',
+                  dateTo: '9999-12-31 11:59:59',
+                })
+              } satisfies ArrakisRequest,
+                (response: Usage) => {
+                  setUsagePayload(response);
+                });
+            } else {
+              setCurrentPage('chat');
+            }
+          }}
           style={menuButtonStyle}>{currentPage === 'chat' ? 'Usage' : 'Chat'}</div>
 
         { /* Updating user configuration (as of writing, just API keys */}
@@ -2214,19 +2235,29 @@ function MainPage() {
           }}
         >
           <ResponsiveContainer width="66%" height={500}>
-            <BarChart data={[0, 2, 3, 4, 5].map((value, index) => ({
-              time: index, // or whatever your x-axis unit is
-              value: value
+            <BarChart data={usagePayload.dates.map((date, i) => ({
+              date,
+              value: usagePayload.tokenUsage[i]
             }))}
-              {...{ marginBottom: '5rem' }}
             >
-              <XAxis dataKey="time" />
+              <XAxis dataKey="date" />
               <YAxis hide={true} />
               <Tooltip
-                contentStyle={{
-                  borderRadius: '0.5rem',
-                  boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
-                  border: 0,
+                content={({ active, payload }) => {
+                  if (active && payload && payload.length) {
+                    return (
+                      <div style={{
+                        backgroundColor: 'white',
+                        padding: '10px',
+                        borderRadius: '0.5rem',
+                        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+                        color: '#4A90E2',
+                      }}>
+                        Token Usage: {payload[0].value}
+                      </div>
+                    );
+                  }
+                  return null;
                 }}
               />
               <Bar

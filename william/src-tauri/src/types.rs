@@ -441,6 +441,7 @@ pub struct Completion {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UsageResponse {
+    #[serde(rename = "tokenUsage")]
     pub token_usage: Vec<usize>,
     pub dates: Vec<String>,
 }
