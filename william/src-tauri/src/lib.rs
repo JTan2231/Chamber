@@ -57,7 +57,7 @@ macro_rules! serialize_response {
         }) {
             Ok(r) => r,
             Err(e) => {
-                lprint!(error, "Error deserializing response: {}", e);
+                lprint!(error, "Error serializing response: {}", e);
                 panic!("William can't function with serde errors! Shutting down.");
             }
         }
@@ -1200,7 +1200,7 @@ async fn websocket_server(db: rusqlite::Connection, dewey: Option<dewey_lib::Dew
                             ws_error!(
                                 websocket,
                                 "Usage",
-                                "Error fetching messages",
+                                "Tokenizer isn't available to calculate usage",
                                 Err::<String, std::io::Error>(std::io::Error::new(
                                     std::io::ErrorKind::Other,
                                     "Error fetching tokenizer"
@@ -1213,8 +1213,9 @@ async fn websocket_server(db: rusqlite::Connection, dewey: Option<dewey_lib::Dew
 
                         let tokenizer = tokenizer.as_ref().unwrap();
 
-                        let mut stmt = match db.prepare(
-                            "SELECT
+                        let mut stmt = db
+                            .prepare(
+                                "SELECT
                                     m.id,
                                     m.message_type_id,
                                     m.content,
@@ -1228,13 +1229,8 @@ async fn websocket_server(db: rusqlite::Connection, dewey: Option<dewey_lib::Dew
                                 JOIN paths p ON m.id = p.message_id
                                 WHERE m.date_created BETWEEN ?1 AND ?2
                                 ORDER BY m.date_created ASC",
-                        ) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                lprint!(error, "wtf: {}", e);
-                                panic!("wtf: {}", e);
-                            }
-                        };
+                            )
+                            .unwrap();
 
                         let messages = match stmt.query_map(
                             params![payload.date_from, payload.date_to],
@@ -1266,26 +1262,58 @@ async fn websocket_server(db: rusqlite::Connection, dewey: Option<dewey_lib::Dew
                                 continue;
                             }
                         }
-                        .map(|m| match m {
-                            Ok(message) => message,
-                            Err(e) => {
-                                lprint!(error, "{}", e);
-                                panic!("idk man");
-                            }
-                        })
+                        .map(|m| m.unwrap())
                         .collect::<Vec<Message>>();
 
-                        let mut tokens = Vec::new();
+                        let mut usages = Vec::new();
                         let mut dates = Vec::new();
 
                         let mut last_date = String::new();
+                        let mut token_usage = std::collections::HashMap::new();
                         for m in messages.iter() {
+                            let api = m.api.to_strings().1;
                             let token_count = tokenizer.encode(&m.content).len();
                             if m.date_created != last_date {
-                                tokens.push(token_count);
-                                dates.push(m.date_created.clone());
+                                if token_usage.len() > 0 {
+                                    usages.push(token_usage);
+                                    dates.push(m.date_created.clone());
+                                }
+
+                                token_usage = std::collections::HashMap::new();
+
+                                let token_usage =
+                                    token_usage.entry(api).or_insert_with(|| TokenUsage {
+                                        input_tokens: 0,
+                                        output_tokens: 0,
+                                    });
+
+                                match m.message_type {
+                                    MessageType::Assistant => {
+                                        token_usage.output_tokens += token_count
+                                    }
+                                    MessageType::System
+                                    | MessageType::User
+                                    | MessageType::Developer => {
+                                        token_usage.input_tokens += token_count
+                                    }
+                                }
                             } else {
-                                *(tokens.last_mut().unwrap()) += token_count;
+                                let token_usage =
+                                    token_usage.entry(api).or_insert_with(|| TokenUsage {
+                                        input_tokens: 0,
+                                        output_tokens: 0,
+                                    });
+
+                                match m.message_type {
+                                    MessageType::Assistant => {
+                                        token_usage.output_tokens += token_count
+                                    }
+                                    MessageType::System
+                                    | MessageType::User
+                                    | MessageType::Developer => {
+                                        token_usage.input_tokens += token_count
+                                    }
+                                }
                             }
 
                             last_date = m.date_created.clone();
@@ -1296,7 +1324,7 @@ async fn websocket_server(db: rusqlite::Connection, dewey: Option<dewey_lib::Dew
                             serialize_response!(
                                 Usage,
                                 UsageResponse {
-                                    token_usage: tokens,
+                                    token_usage: usages,
                                     dates
                                 },
                                 id

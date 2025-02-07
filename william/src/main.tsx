@@ -4,7 +4,7 @@ import ReactDOM from 'react-dom/client';
 import MarkdownIt from 'markdown-it';
 import markdownItKatex from 'markdown-it-katex';
 import { z } from 'zod';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import hljs from 'highlight.js';
 
 import './font.css';
@@ -139,9 +139,14 @@ const UsageRequestSchema = z.object({
   dateTo: z.string(),
 });
 
+const TokenUsageSchema = z.object({
+  inputTokens: z.number(),
+  outputTokens: z.number()
+});
+
 const UsageResponseSchema = z.object({
-  tokenUsage: z.number().array(),
-  dates: z.string().array(),
+  tokenUsage: z.array(z.record(z.string(), TokenUsageSchema)),
+  dates: z.array(z.string())
 });
 
 const PreviewResponseSchema = PreviewRequestSchema;
@@ -1241,8 +1246,13 @@ function MainPage() {
 
   // The conversation title card in the top left
   // TODO: this is a little unstable and needs debugging when conversation names are changing around
+  //
+  // TODO: This isn't even being used anymore
   const titleDefault = () => ({ title: '', index: 0 });
   const [displayedTitle, setDisplayedTitle] = useState<{ title: string; index: number; }>(titleDefault());
+
+  // TODO: Abstract/separate this to a properly separate component
+  const [hoveredBar, setHoveredBar] = useState<string>('');
 
   // This is really only used to scroll the chat down to the bottom when a message is being streamed
   const messagesRef = useRef() as React.MutableRefObject<HTMLDivElement>;
@@ -1306,6 +1316,26 @@ function MainPage() {
         userConfig.apiKeys.gemini));
   };
 
+  const usagePageToggle = () => {
+    if (currentPage === 'chat') {
+      setCurrentPage('usage');
+      sendMessage({
+        method: 'Usage',
+        payload: UsageRequestSchema.parse({
+          api: model,
+          dateFrom: '1970-01-01 00:00:00',
+          dateTo: '9999-12-31 11:59:59',
+        })
+      } satisfies ArrakisRequest,
+        (response: Usage) => {
+          setUsagePayload(response);
+        });
+    } else {
+      setCurrentPage('chat');
+    }
+  };
+
+
   // Once we receive the user settings from the backend,
   // we do a quick check to see if they've set their API keys
   //
@@ -1339,6 +1369,8 @@ function MainPage() {
           setSelectedModal('search');
         } else if (event.key === 'n') {
           resetConversation();
+        } else if (event.key === 'u') {
+          usagePageToggle();
         }
       }
 
@@ -1868,24 +1900,7 @@ function MainPage() {
         { /* Toggle between Usage metrics page and the main chat */}
         <div
           className="buttonHoverLight"
-          onClick={() => {
-            if (currentPage === 'chat') {
-              setCurrentPage('usage');
-              sendMessage({
-                method: 'Usage',
-                payload: UsageRequestSchema.parse({
-                  api: model,
-                  dateFrom: '1970-01-01 00:00:00',
-                  dateTo: '9999-12-31 11:59:59',
-                })
-              } satisfies ArrakisRequest,
-                (response: Usage) => {
-                  setUsagePayload(response);
-                });
-            } else {
-              setCurrentPage('chat');
-            }
-          }}
+          onClick={usagePageToggle}
           style={menuButtonStyle}>{currentPage === 'chat' ? 'Usage' : 'Chat'}</div>
 
         { /* Updating user configuration (as of writing, just API keys */}
@@ -2235,15 +2250,39 @@ function MainPage() {
           }}
         >
           <ResponsiveContainer width="66%" height={500}>
-            <BarChart data={usagePayload.dates.map((date, i) => ({
-              date,
-              value: usagePayload.tokenUsage[i]
-            }))}
+            <BarChart
+              data={usagePayload.dates.map((date, i) => {
+                console.log(usagePayload);
+                // Create an object with date and flattened token usage data
+                const dateData: {
+                  date: string;
+                  [key: string]: number | string;
+                } = { date: date };
+
+                Object.entries(usagePayload.tokenUsage[i]).forEach(([api, usage]) => {
+                  dateData[`input-${api}`] = usage.inputTokens;
+                  dateData[`output-${api}`] = usage.outputTokens;
+                });
+
+                console.log(dateData);
+
+                return dateData;
+              })}
             >
+              <CartesianGrid
+                strokeDasharray="3 3"
+                stroke="#e0e0e0"
+                vertical={false}
+              />
               <XAxis dataKey="date" />
-              <YAxis hide={true} />
+              <YAxis
+                hide={false}
+                tickLine={{ strokeWidth: 1 }}
+                tick={{ fontSize: 12, fill: '#666' }}
+                tickSize={8}
+              />
               <Tooltip
-                content={({ active, payload }) => {
+                content={({ active, payload, label }) => {
                   if (active && payload && payload.length) {
                     return (
                       <div style={{
@@ -2253,18 +2292,60 @@ function MainPage() {
                         boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
                         color: '#4A90E2',
                       }}>
-                        Token Usage: {payload[0].value}
+                        <div>{label}</div>
+                        {payload.filter(entry => hoveredBar === '' || entry.name === hoveredBar).map((entry) => (
+                          <div key={entry.name} style={{ color: entry.color }}>
+                            {entry.name}: {entry.value}
+                          </div>
+                        ))}
                       </div>
                     );
                   }
                   return null;
                 }}
               />
-              <Bar
-                dataKey="value"
-                fill="#45B6E2"
-                activeBar={{ fill: '#4A90E2' }}
-                radius={[4, 4, 0, 0]}
+              {/* Input tokens stack */}
+              {[...new Set(
+                usagePayload.tokenUsage.flatMap(dayData =>
+                  Object.keys(dayData)
+                ))
+              ].map((api, index) => {
+                const key = `input-${api}`;
+                return (
+                  <Bar
+                    key={key}
+                    dataKey={key}
+                    name={key}
+                    stackId="input"
+                    fill={`hsl(200, 70%, ${60 + (index * 10)}%)`}
+                    onMouseEnter={(_) => setHoveredBar(key)}
+                    onMouseLeave={(_) => setHoveredBar('')}
+                  />
+                );
+              })}
+              {/* Output tokens stack */}
+              {[...new Set(
+                usagePayload.tokenUsage.flatMap(dayData =>
+                  Object.keys(dayData)
+                ))
+              ].map((api, index) => {
+                const key = `output-${api}`;
+                return (
+                  <Bar
+                    key={key}
+                    dataKey={key}
+                    name={key}
+                    stackId="output"
+                    fill={`hsl(130, 70%, ${60 + (index * 10)}%)`}
+                    onMouseEnter={(_) => setHoveredBar(key)}
+                    onMouseLeave={(_) => setHoveredBar('')}
+                  />
+                );
+              })}
+              <Legend
+                layout="horizontal"
+                align="center"
+                wrapperStyle={{ paddingTop: '10px', color: '#666', fontSize: '14px' }}
               />
             </BarChart>
           </ResponsiveContainer>

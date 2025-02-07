@@ -38,7 +38,7 @@ impl MessageType {
     }
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, Hash, Eq, PartialEq)]
 #[serde(tag = "provider", content = "model")]
 pub enum API {
     #[serde(rename = "openai")]
@@ -49,7 +49,7 @@ pub enum API {
     Anthropic(AnthropicModel),
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, Hash, Eq, PartialEq)]
 pub enum OpenAIModel {
     #[serde(rename = "gpt-4o")]
     GPT4o,
@@ -61,13 +61,13 @@ pub enum OpenAIModel {
     O1Mini,
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, Hash, Eq, PartialEq)]
 pub enum GroqModel {
     #[serde(rename = "llama3-70b-8192")]
     LLaMA70B,
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, Hash, Eq, PartialEq)]
 pub enum AnthropicModel {
     #[serde(rename = "claude-3-opus-20240229")]
     Claude3Opus,
@@ -116,6 +116,7 @@ impl API {
         }
     }
 
+    /// Returns a tuple of (provider, model)
     pub fn to_strings(&self) -> (String, String) {
         match self {
             API::OpenAI(model) => {
@@ -440,9 +441,17 @@ pub struct Completion {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TokenUsage {
+    #[serde(rename = "inputTokens")]
+    pub input_tokens: usize,
+    #[serde(rename = "outputTokens")]
+    pub output_tokens: usize,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UsageResponse {
     #[serde(rename = "tokenUsage")]
-    pub token_usage: Vec<usize>,
+    pub token_usage: Vec<std::collections::HashMap<String, TokenUsage>>,
     pub dates: Vec<String>,
 }
 
