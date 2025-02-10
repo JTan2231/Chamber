@@ -1197,6 +1197,137 @@ const MessageOptionsTooltip = (props: {
   );
 };
 
+const UsagePage = (props: { sendMessage: WebSocketSend, model: API }) => {
+  // The actual data payload from the backend
+  const [usagePayload, setUsagePayload] = useState<Usage>({ tokenUsage: [], dates: [] });
+  // Identifies which bar in the graph the user is currently hovering, if any
+  const [hoveredBar, setHoveredBar] = useState<string>('');
+
+  useEffect(() => {
+    props.sendMessage({
+      method: 'Usage',
+      payload: UsageRequestSchema.parse({
+        api: props.model,
+        dateFrom: '1970-01-01 00:00:00',
+        dateTo: '9999-12-31 11:59:59',
+      })
+    } satisfies ArrakisRequest,
+      (response: Usage) => {
+        setUsagePayload(response);
+      });
+  }, []);
+
+  return (
+    <div>
+      <ResponsiveContainer width="100%" height={400}>
+        <BarChart
+          data={usagePayload.dates.map((date, i) => {
+            // Create an object with date and flattened token usage data
+            const dateData: {
+              date: string;
+              [key: string]: number | string;
+            } = { date: date };
+
+            Object.entries(usagePayload.tokenUsage[i]).forEach(([api, usage]) => {
+              dateData[`input-${api}`] = usage.inputTokens;
+              dateData[`output-${api}`] = usage.outputTokens;
+            });
+
+            return dateData;
+          })}
+        >
+          <CartesianGrid
+            strokeDasharray="3 3"
+            stroke="#e0e0e0"
+            vertical={false}
+          />
+          <XAxis dataKey="date" />
+          <YAxis
+            hide={false}
+            tickLine={{ strokeWidth: 1 }}
+            tick={{ fontSize: 12, fill: '#666' }}
+            tickSize={8}
+          />
+          <Tooltip
+            content={({ active, payload, label }) => {
+              if (active && payload && payload.length) {
+                return (
+                  <div style={{
+                    backgroundColor: 'white',
+                    padding: '10px',
+                    borderRadius: '0.5rem',
+                    boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+                    color: '#4A90E2',
+                  }}>
+                    <div>{label}</div>
+                    {payload.filter(entry => hoveredBar === '' || entry.name === hoveredBar).map((entry) => (
+                      <div key={entry.name} style={{ color: entry.color }}>
+                        {entry.name}: {entry.value}
+                      </div>
+                    ))}
+                  </div>
+                );
+              }
+              return null;
+            }}
+          />
+          {/* Input tokens stack */}
+          {[...new Set(
+            usagePayload.tokenUsage.flatMap(dayData =>
+              Object.keys(dayData)
+            ))
+          ].map((api, index) => {
+            const key = `input-${api}`;
+            return (
+              <Bar
+                key={key}
+                dataKey={key}
+                name={key}
+                stackId="input"
+                fill={`hsl(200, 70%, ${30 + (index * 10)}%)`}
+                onMouseEnter={(_) => setHoveredBar(key)}
+                onMouseLeave={(_) => setHoveredBar('')}
+                style={{
+                  transition: 'all 0.3s',
+                  opacity: hoveredBar === '' || hoveredBar === key ? 1 : 0.1,
+                }}
+              />
+            );
+          })}
+          {/* Output tokens stack */}
+          {[...new Set(
+            usagePayload.tokenUsage.flatMap(dayData =>
+              Object.keys(dayData)
+            ))
+          ].map((api, index) => {
+            const key = `output-${api}`;
+            return (
+              <Bar
+                key={key}
+                dataKey={key}
+                name={key}
+                stackId="output"
+                fill={`hsl(130, 70%, ${30 + (index * 10)}%)`}
+                onMouseEnter={(_) => setHoveredBar(key)}
+                onMouseLeave={(_) => setHoveredBar('')}
+                style={{
+                  transition: 'all 0.3s',
+                  opacity: hoveredBar === '' || hoveredBar === key ? 1 : 0.1,
+                }}
+              />
+            );
+          })}
+          <Legend
+            layout="horizontal"
+            align="center"
+            wrapperStyle={{ paddingTop: '10px', color: '#666', fontSize: '14px' }}
+          />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+};
+
 function MainPage() {
   const {
     connectionStatus,
@@ -1240,19 +1371,12 @@ function MainPage() {
   const [hoveredSystemPrompts, setHoveredSystemPrompts] = useState<string[]>(['']);
   const [mousePosition, setMousePosition] = useState<number[]>([0, 0]);
 
-  // State variables for the usage page
-  // This should really end up being its own component, but we'll run with this for now
-  const [usagePayload, setUsagePayload] = useState<Usage>({ tokenUsage: [], dates: [] });
-
   // The conversation title card in the top left
   // TODO: this is a little unstable and needs debugging when conversation names are changing around
   //
   // TODO: This isn't even being used anymore
   const titleDefault = () => ({ title: '', index: 0 });
   const [displayedTitle, setDisplayedTitle] = useState<{ title: string; index: number; }>(titleDefault());
-
-  // TODO: Abstract/separate this to a properly separate component
-  const [hoveredBar, setHoveredBar] = useState<string>('');
 
   // This is really only used to scroll the chat down to the bottom when a message is being streamed
   const messagesRef = useRef() as React.MutableRefObject<HTMLDivElement>;
@@ -1319,17 +1443,6 @@ function MainPage() {
   const usagePageToggle = () => {
     if (currentPage === 'chat') {
       setCurrentPage('usage');
-      sendMessage({
-        method: 'Usage',
-        payload: UsageRequestSchema.parse({
-          api: model,
-          dateFrom: '1970-01-01 00:00:00',
-          dateTo: '9999-12-31 11:59:59',
-        })
-      } satisfies ArrakisRequest,
-        (response: Usage) => {
-          setUsagePayload(response);
-        });
     } else {
       setCurrentPage('chat');
     }
@@ -2241,114 +2354,17 @@ function MainPage() {
         </div>
       </>
       ) : (
+
         <div
           style={{
-            top: `${headerHeight}rem`,
+            top: `calc(50vh + ${headerHeight}rem)`,
+            transform: 'translateY(-50%)',
             padding: '2.5rem',
             width: 'calc(100% - 5rem)', // subtracting 2 * padding
             position: 'relative',
           }}
         >
-          <ResponsiveContainer width="66%" height={500}>
-            <BarChart
-              data={usagePayload.dates.map((date, i) => {
-                console.log(usagePayload);
-                // Create an object with date and flattened token usage data
-                const dateData: {
-                  date: string;
-                  [key: string]: number | string;
-                } = { date: date };
-
-                Object.entries(usagePayload.tokenUsage[i]).forEach(([api, usage]) => {
-                  dateData[`input-${api}`] = usage.inputTokens;
-                  dateData[`output-${api}`] = usage.outputTokens;
-                });
-
-                console.log(dateData);
-
-                return dateData;
-              })}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="#e0e0e0"
-                vertical={false}
-              />
-              <XAxis dataKey="date" />
-              <YAxis
-                hide={false}
-                tickLine={{ strokeWidth: 1 }}
-                tick={{ fontSize: 12, fill: '#666' }}
-                tickSize={8}
-              />
-              <Tooltip
-                content={({ active, payload, label }) => {
-                  if (active && payload && payload.length) {
-                    return (
-                      <div style={{
-                        backgroundColor: 'white',
-                        padding: '10px',
-                        borderRadius: '0.5rem',
-                        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
-                        color: '#4A90E2',
-                      }}>
-                        <div>{label}</div>
-                        {payload.filter(entry => hoveredBar === '' || entry.name === hoveredBar).map((entry) => (
-                          <div key={entry.name} style={{ color: entry.color }}>
-                            {entry.name}: {entry.value}
-                          </div>
-                        ))}
-                      </div>
-                    );
-                  }
-                  return null;
-                }}
-              />
-              {/* Input tokens stack */}
-              {[...new Set(
-                usagePayload.tokenUsage.flatMap(dayData =>
-                  Object.keys(dayData)
-                ))
-              ].map((api, index) => {
-                const key = `input-${api}`;
-                return (
-                  <Bar
-                    key={key}
-                    dataKey={key}
-                    name={key}
-                    stackId="input"
-                    fill={`hsl(200, 70%, ${60 + (index * 10)}%)`}
-                    onMouseEnter={(_) => setHoveredBar(key)}
-                    onMouseLeave={(_) => setHoveredBar('')}
-                  />
-                );
-              })}
-              {/* Output tokens stack */}
-              {[...new Set(
-                usagePayload.tokenUsage.flatMap(dayData =>
-                  Object.keys(dayData)
-                ))
-              ].map((api, index) => {
-                const key = `output-${api}`;
-                return (
-                  <Bar
-                    key={key}
-                    dataKey={key}
-                    name={key}
-                    stackId="output"
-                    fill={`hsl(130, 70%, ${60 + (index * 10)}%)`}
-                    onMouseEnter={(_) => setHoveredBar(key)}
-                    onMouseLeave={(_) => setHoveredBar('')}
-                  />
-                );
-              })}
-              <Legend
-                layout="horizontal"
-                align="center"
-                wrapperStyle={{ paddingTop: '10px', color: '#666', fontSize: '14px' }}
-              />
-            </BarChart>
-          </ResponsiveContainer>
+          <UsagePage sendMessage={sendMessage} model={model} />
         </div>
       )}
     </div >
