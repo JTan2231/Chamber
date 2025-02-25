@@ -77,6 +77,8 @@ pub enum AnthropicModel {
     Claude3Haiku,
     #[serde(rename = "claude-3-5-sonnet-latest")]
     Claude35Sonnet,
+    #[serde(rename = "claude-3-7-sonnet-20250219")]
+    Claude37Sonnet,
     #[serde(rename = "claude-3-5-haiku-latest")]
     Claude35Haiku,
 }
@@ -141,6 +143,7 @@ impl API {
                     AnthropicModel::Claude3Haiku => "claude-3-haiku-20240307",
                     AnthropicModel::Claude35Sonnet => "claude-3-5-sonnet-latest",
                     AnthropicModel::Claude35Haiku => "claude-3-5-haiku-latest",
+                    AnthropicModel::Claude37Sonnet => "claude-3-5-sonnet-latest",
                 };
                 ("anthropic".to_string(), model_str.to_string())
             }

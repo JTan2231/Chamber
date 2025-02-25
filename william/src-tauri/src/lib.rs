@@ -355,6 +355,13 @@ fn add_message_embedding(
         Ok(_) => {}
         Err(e) => {
             lprint!(error, "Error processing message {}: {}", filepath, e);
+            if let Err(cleanup_err) = std::fs::remove_file(&filepath) {
+                lprint!(
+                    error,
+                    "Failed to remove file after embedding error: {}",
+                    cleanup_err
+                );
+            }
         }
     };
 
@@ -548,7 +555,7 @@ fn completion(
     match add_message_embedding(&mut dewey, db, last_user_message, &filepath) {
         Ok(_) => {}
         Err(e) => {
-            lprint!(error, "Error adding message to Dewey: {}; ignoring", e);
+            lprint!(error, "Error adding user message to Dewey: {}; ignoring", e);
         }
     };
 
@@ -618,46 +625,54 @@ fn completion(
             // TODO: this feels disgusting. There has to be a better way of telling when the stream
             //       has ended
             Err(e) => {
-                lprint!(info, "Assuming stream completed... ({})", e);
+                if message_received {
+                    lprint!(info, "Assuming stream completed... ({})", e);
 
-                // Weird one-off response serialization
-                ws_send!(
-                    websocket,
-                    serialize_response!(
-                        CompletionEnd,
-                        SystemPrompt {
-                            content: system_prompt,
-                        },
-                        request_id.to_string()
-                    )
-                );
-
-                // Backend storage duties--SQLite + embedding generation/storage
-                match conversation.upsert(db) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        ws_error!(
-                            websocket,
-                            "Completion",
-                            "Error upserting conversation in DB",
-                            e,
+                    // Weird one-off response serialization
+                    ws_send!(
+                        websocket,
+                        serialize_response!(
+                            CompletionEnd,
+                            SystemPrompt {
+                                content: system_prompt,
+                            },
                             request_id.to_string()
-                        );
-                    }
-                };
+                        )
+                    );
 
-                if dewey.is_some() {
-                    match add_message_embedding(
-                        &mut dewey,
-                        db,
-                        conversation.messages.last().unwrap(),
-                        &filepath,
-                    ) {
+                    // Backend storage duties--SQLite + embedding generation/storage
+                    match conversation.upsert(db) {
                         Ok(_) => {}
                         Err(e) => {
-                            lprint!(error, "Error adding message to Dewey: {}; ignoring", e);
+                            ws_error!(
+                                websocket,
+                                "Completion",
+                                "Error upserting conversation in DB",
+                                e,
+                                request_id.to_string()
+                            );
                         }
                     };
+
+                    if dewey.is_some() {
+                        match add_message_embedding(
+                            &mut dewey,
+                            db,
+                            conversation.messages.last().unwrap(),
+                            &filepath,
+                        ) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                lprint!(
+                                    error,
+                                    "Error adding assistant message to Dewey: {}; ignoring",
+                                    e
+                                );
+                            }
+                        };
+                    }
+                } else {
+                    lprint!(error, "Stream channel closing without receiving delta");
                 }
 
                 break;
